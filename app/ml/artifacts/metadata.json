@@ -1,0 +1,34 @@
+{
+  "feature_order": [
+    "distance_km",
+    "traffic_level",
+    "weather_index",
+    "hour_of_day",
+    "day_of_week",
+    "vehicle_load_kg"
+  ],
+  "classes": [
+    "ROUTE_A",
+    "ROUTE_B",
+    "ROUTE_C",
+    "ROUTE_D"
+  ],
+  "scaler": {
+    "mean": [
+      20.125,
+      5.375,
+      5.0625,
+      11.125,
+      2.6875,
+      1337.5
+    ],
+    "scale": [
+      10.902264672993406,
+      2.2878756522153907,
+      2.946793808531571,
+      4.3857011982122085,
+      1.8614090764794289,
+      692.93307757676
+    ]
+  }
+}

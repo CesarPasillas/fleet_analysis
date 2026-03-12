@@ -1,0 +1,217 @@
+﻿Event_Type, Key, Description
+201,SOS / PANIC_BUTTON,El botón físico de emergencia fue presionado.
+202,DOOR_OPENED,Se detectó la apertura de una puerta (vía sensor magnético).
+203,SHOCK_ALARM,El acelerómetro detectó un golpe fuerte o impacto.
+204,TOW_ALARM,Alerta de remolque (el vehículo se mueve sin ignición).
+205,INTRUSION_ALARM,Activación de la alarma original del vehículo o sensor de cabina.
+206,HOOD_OPENED,Apertura del cofre/capó del motor.
+207,TRUNK_OPENED,Apertura de la cajuela/maletero.
+208,WINDOW_BROKEN,Sensor de rotura de cristales activado.
+209,FUEL_CAP_OPENED,Apertura de la tapa de combustible (prevención de ordeña).
+210,DOOR_CLOSED,Se detectó que la puerta fue cerrada.
+211,SENSOR_1_ON,Entrada digital 1 activada (uso genérico).
+212,SENSOR_1_OFF,Entrada digital 1 desactivada.
+213,SENSOR_2_ON,Entrada digital 2 activada.
+214,SENSOR_2_OFF,Entrada digital 2 desactivada.
+215,SENSOR_3_ON,Entrada digital 3 activada.
+216,SENSOR_3_OFF,Entrada digital 3 desactivada.
+220,TEMPERATURE_HIGH,Sensor de temperatura superó el límite máximo.
+221,TEMPERATURE_LOW,Sensor de temperatura bajó del límite mínimo.
+222,HUMIDITY_HIGH,Sensor de humedad fuera de rango (alto).
+223,HUMIDITY_LOW,Sensor de humedad fuera de rango (bajo).
+230,FUEL_LEAK,Caída repentina en el nivel de combustible (posible robo).
+231,FUEL_REFILL,Incremento repentino en el nivel de combustible (carga).
+240,RFID_CARD_READ,Se detectó la lectura de una tarjeta de conductor.
+241,DRIVER_LOGGED_IN,Conductor identificado e ingresado al sistema.
+242,DRIVER_LOGGED_OUT,Conductor cerró sesión o retiró su identificación.
+250,PASSENGER_COUNT,Reporte de contador de pasajeros (para transporte público).
+301,GEOFENCE_IN,El vehículo entró en una geocerca circular o poligonal.
+302,GEOFENCE_OUT,El vehículo salió de una geocerca.
+303,ROUTE_IN,El vehículo ingresó a la trayectoria de una ruta definida.
+304,ROUTE_OUT,El vehículo se desvió de la ruta permitida.
+305,STATION_IN,Entrada a una estación o punto de control (frecuente en transporte público).
+306,STATION_OUT,Salida de una estación o punto de control.
+307,CHECKPOINT_REACHED,Punto de control visitado (validado por tiempo o posición).
+308,CHECKPOINT_MISSED,El vehículo no pasó por un punto de control obligatorio.
+309,GEOFENCE_STOP_OVERTIME,El vehículo permaneció detenido dentro de una geocerca por más tiempo del permitido.
+310,DELIVERY_STARTED,Inicio de una entrega (activado por software o sensor).
+311,DELIVERY_COMPLETED,Entrega finalizada con éxito.
+312,DELIVERY_FAILED,Intento de entrega fallido (ej. no estaba el cliente).
+313,ORDER_PICKED_UP,El conductor ha recolectado el paquete o mercancía. Se usa en apps de última milla.
+314,ORDER_EN_ROUTE,La orden ha cambiado de estado a "En camino". Inicia el cálculo de tiempo estimado de llegada (ETA).
+315,ORDER_DELIVERED,La orden o mercancía ha sido entregada al destinatario final.
+317,GEOFENCE_SPEEDING,Exceso de velocidad dentro de una geocerca específica (ej. ir a más de 20 km/h dentro de una planta).
+318,GEOFENCE_EXIT_LATENESS,Salida tardía de una geocerca. El vehículo salió después de la hora programada en el itinerario.
+320,IDLE_START,Inicio de tiempo de ralentí (motor encendido pero vehículo detenido).
+321,IDLE_STOP,Fin del tiempo de ralentí.
+322,EXCESSIVE_IDLE,Alerta: El vehículo lleva demasiado tiempo detenido con motor encendido.
+323,STATION_SKIPPED,Estación omitida. El vehículo pasó cerca de un punto de parada obligatorio pero no se detuvo.
+324,UNAUTHORIZED_STOP,Parada no autorizada. El vehículo se detuvo por más de $N$ minutos fuera de las geocercas permitidas.
+326,DOOR_OPENED_OUTSIDE_GEOFENCE,Apertura de puertas en zona no autorizada. Alerta crítica de seguridad y posible robo de mercancía.
+327,DOOR_CLOSED_OUTSIDE_GEOFENCE,Cierre de puertas en zona no autorizada (complemento del 326).
+328,UNAUTHORIZED_GEOFENCE_ENTRY,Entrada a una geocerca prohibida (ej. zona roja de alta delincuencia o zona de competencia).
+330,PARKING_START,El vehículo ha sido estacionado (ignición apagada).
+331,PARKING_STOP,El vehículo ha dejado de estar estacionado.
+333,PARKING_OVERTIME,Exceso de tiempo de estacionamiento (el vehículo lleva demasiado tiempo con el motor apagado).
+335,OFF_HOURS_MOVEMENT,	Movimiento fuera de horario. El vehículo se movió en un horario no laboral definido (ej. madrugada).
+336,NIGHT_PARKING_VIOLATION,El vehículo no pernoctó en la ubicación asignada (base o casa del chofer).
+337,STATION_ARRIVED_EARLY,El vehículo llegó a la estación o punto de control antes de la hora programada (afecta la sincronización de rutas).
+338,STATION_ARRIVED_LATE,El vehículo llegó tarde a la parada programada (retraso en el itinerario).
+339,STATION_DEPARTED_EARLY,El vehículo salió de la estación antes de tiempo (el pasajero o cliente podría haber perdido el servicio).
+340,WORK_TIME_START,Inicio de jornada laboral del conductor.
+341,WORK_TIME_STOP,Fin de jornada laboral del conductor.
+342,WAIT_TIME_EXCEEDED,Se superó el tiempo de espera permitido en un punto de carga o estación.
+343,BREAK_TIME_EXCEEDED,El conductor tomó más tiempo de descanso (pausa activa) del que tiene permitido por política.
+345,REST_TIME_START,Inicio de tiempo de descanso obligatorio (pausa activa).
+346,REST_TIME_STOP,Fin de tiempo de descanso.
+350,MAINTENANCE_DUE,Alerta de mantenimiento preventivo (por odómetro o tiempo).
+401,FORWARD_COLLISION,Alerta de colisión frontal. La cámara detecta que el vehículo chocará con el de adelante si no frena.
+402,LANE_DEPARTURE,Salida de carril involuntaria. El vehículo pisa las líneas de la carretera sin activar las luces direccionales.
+403,HEADWAY_MONITORING,Distancia de seguimiento insegura. El conductor va "pegado" al vehículo de adelante (Tailgating).
+404,PEDESTRIAN_DETECTION,Detección de peatones o ciclistas en la trayectoria del vehículo.
+405,DSM_SMOKING,El conductor está fumando dentro de la cabina (detectado por la cámara interna).
+406,DSM_DISTRACTION,El conductor no tiene la vista en el camino (mira hacia los lados o hacia abajo por mucho tiempo).
+407,DSM_CELLPHONE,El conductor está usando el teléfono celular mientras conduce.
+408,DSM_YAWNING,El conductor está bostezando (signo temprano de fatiga).
+409,DSM_EYELINE_CLOSED,Ojos cerrados (micro-sueño). Es la alerta más crítica de la cámara DSM.
+410,DSM_NO_DRIVER,La cámara no detecta al conductor en su asiento (posible abandono del puesto con motor encendido).
+415,FATIGUE_DRIVING,Alerta de fatiga. Generada por cámaras con IA (DSM) al detectar bostezos o cierre de ojos.
+416,SEATBELT_UNFASTENED,El conductor no lleva puesto el cinturón de seguridad (detectado por cámara).
+422,DRIVER_ID_CHANGED,Se detectó un cambio de rostro al volante (Face ID).
+423,UNAUTHORIZED_DRIVER,El rostro detectado no está en la base de datos permitida.
+428,INFRARED_BLOCKING,El conductor cubrió la cámara o usa lentes que bloquean los sensores IR.
+432,OBJECT_DETECTION_L1,"Nivel 1 (Informativo): Se detecta un objeto en la trayectoria (auto, peatón) a una distancia considerable.	Monitoreo visual."
+433,OBJECT_DETECTION_L2,"Nivel 2 (Precaución): La distancia se acorta. El TTC es de aproximadamente 2.5 a 3 segundos. Mantener atención plena."
+434,OBJECT_DETECTION_L3,"Nivel 3 (Advertencia): Riesgo inminente. El sistema suele emitir un pitido o alerta visual en cabina. Empezar a frenar."
+435,OBJECT_DETECTION_L4,"Nivel 4 (Crítico): Colisión inminente. El TTC es menor a 1 segundo. Frenado de emergencia."
+436,ADAS_CALIBRATION_START,Se ha iniciado el proceso de calibración. El sistema está analizando el entorno para fijar sus puntos de referencia.
+437,ADAS_CALIBRATION_SUCCESS,La cámara se ha calibrado correctamente. Los cálculos de distancia y carril ahora son precisos.
+438,ADAS_CALIBRATION_FAILED,Error en la calibración. El sistema no pudo fijar los puntos de referencia (posiblemente por falta de líneas en el camino).
+439,ADAS_CAMERA_OBSTRUCTED,"La visión de la cámara está bloqueada (por lodo, una estampa, lluvia extrema o nieve)."
+440,ADAS_SENSOR_MISALIGNMENT,Desalineación detectada. El sensor se movió físicamente de su base y ya no apunta al ángulo correcto.
+441,ADAS_SYSTEM_STANDBY,El sistema entra en modo de espera. Los sensores están encendidos pero no están procesando alertas de seguridad.
+442,ALCOHOL_DETECTED,El sensor de alcoholemia (interlock) detectó presencia de alcohol en el aliento del conductor.
+443,ALCOHOL_TEST_PASSED,El conductor realizó la prueba de alcoholemia y el resultado fue negativo (apto para conducir).
+444,ALCOHOL_TEST_FAILED,"El conductor falló la prueba de alcoholemia. Generalmente, esto bloquea el encendido del motor."
+445,DRUG_INFLUENCE_DETECTED,"La IA detectó signos físicos o patrones de manejo asociados al consumo de estupefacientes (pupilas, movimientos erráticos)."
+446,ALCOHOL_SENSOR_TAMPER,Intento de manipulación del sensor de alcohol (ej. usar una bomba de aire o globos para soplar).
+447,CRITICAL_HEALTH_ALARM,Alerta de salud crítica. Puede venir de smartwatches integrados (pulso cardiaco) o detección de desmayo por IA.
+451,VIOLATION_RECORDING,Se inició una grabación automática por una violación de tráfico.
+453,MDVR_STORAGE_NOT_FOUND,"El sistema no detecta el medio de almacenamiento. El disco duro o la tarjeta SD se desconectaron, se cayeron o fueron removidos."
+454,MDVR_STORAGE_ERROR,"El medio de almacenamiento está presente pero es ilegible. Puede deberse a sectores dañados, formato incorrecto o fin de vida útil de la memoria."
+455,MDVR_STORAGE_FULL_NOT_OVERWRITING,El disco está lleno y el sistema no está logrando borrar los videos más viejos para grabar los nuevos (falla en el ciclo de sobreescritura).
+457,VIDEO_LOSS_CH1,"Cámara Frontal (Road Facing),Se perdió la señal de la cámara que ve el camino. Es la cámara más importante para accidentes."
+458,VIDEO_LOSS_CH2,"Cámara de Cabina (Driver Facing),Se perdió la señal de la cámara que vigila al chofer (DSM). No se podrán detectar fatigas o distracciones."
+459,VIDEO_LOSS_CH3,"Cámara Auxiliar (Carga/Reversa),Se perdió la señal de la cámara de la caja, lateral o de reversa." 
+462,DOOR_BLOCKED,Obstrucción en puerta. El sistema detecta que algo (un objeto) o alguien (un pasajero) impide que la puerta cierre completamente.
+463,DOOR_ANTIPINCH_ACTIVATED,Sistema Anti-atrapamiento. La puerta detectó una resistencia física durante el cierre y se reabrió automáticamente para evitar lesionar a una persona.
+467,PASSENGER_OVERLOAD,Exceso de pasajeros detectado por conteo de video.
+501,REPORT_LOCATION,Reporte temporizado con ignición encendida
+502,REPORT_IDLE,Reporte temporizado con ignición apagada
+503,ALIVE,"Reporte para mantener viva la conexión con el servidor. Puede o no contener posición según la marca del dispositivo, p. ej. en Suntech solo contiene número de serie mientras que en Cellocator si incluye información de posición y E/S."
+504,RES_ACK,Confirmación de datos enviados por RS-232
+505,REPORT_ANGLE,Reporte de posición por cambio de dirección
+506,REPORT_DISTANCE,Reporte de posición por distancia recorrida
+507,TOWING_DETECTION,"Detección de Remolque. El acelerómetro detecta movimiento y vibración, pero la ignición está apagada. Indica que una grúa se lleva el auto o un robo por arrastre."
+508,FINE_TRACKING,
+509,GPS_FAKE_LOCATION,GPS Spoofing. El equipo detecta que las señales de satélite recibidas son falsas o generadas por un simulador para ocultar la ubicación real.
+511,MAIN_POWER_ON,Conexión de alimentación al dispositivo de rastreo
+512,MAIN_POWER_OFF,"Desconexión de alimentación del dispositivo de rastreo (coloquialmente ""funcionando con baterías"")"
+513,MAIN_POWER_LOW,Voltaje de alimentación es menor al esperado
+514,BACKUP_BAT_CHARGING,
+515,BACKUP_BAT_ON,Conexión de batería de respaldo
+516,BACKUP_BAT_OFF,Desconexión de batería de respaldo
+517,BACKUP_BAT_LOW,Batería de respaldo con poco voltaje restante
+518,BACKUP_BAT_ERROR,
+519,IGNITION_ON,Reporte generado al detectarse que se enciende ignición (puede generarse por detectar voltaje en pin digital o por ponerse en movimiento la unidad según la configuración de tipo de ignición)
+520,IGNITION_OFF,Reporte generado al apagarse la ignición o al detenerse la unidad (según la configuración del dispositivo)
+521,REBOOT,Reporte enviado después de que el equipo se reinició tras haber recibido un comando de reinicio
+531,EMERGENCY,
+532,PANIC,"Evento de pánico, algunos dispositivos tienen un evento de pánico dedicado, no utilizado en la mayoría de dispositivos"
+533,MOTION_DETECTED,Evento generado cuando se detecta que el dispositivo está en movimiento con la ignición apagada
+534,PARKING_LOCK,
+535,ANTI_THEFT,
+536,ANTI_THEFT_DOOR,
+537,ANTI_THEFT_SHOCK,
+538,ENCLOSURE_OPENED,
+551,SPEEDING_START,Generado cuando el dispositivo detecta que se ha rebasado el límite de velocidad que tiene configurado internamente
+552,SPEEDING_STOP,Reporte generado cuando la velocidad ha disminuído debajo del límite de velocidad después de haberlo superado
+553,GPS_ANT_DISCONNECTED,Reporte enviado por el dispositivo al detectar desconexión de la antena GPS externa
+554,GPS_ANT_RECONNECTED,Reporte enviado por el dispositivo cuando detecta que se conectó la antena GPS externa después de haber tenido una desconexión
+555,GEOFENCE_OUT,
+556,GEOFENCE_IN,
+557,GPS_ANT_SHORTED,Antena GPS en corto
+558,DEEP_SLEEP_START,Generado cuando el dispositivo está entrando a modo de bajo consumo (hibernación)
+559,DEEP_SLEEP_STOP,Generado cuando el dispositivo sale del modo hibernación
+560,SHOCKED,Reporte generado cuando se detecta un choque con la ignición apagada
+561,COLLISION,Reporte generado cuando se detecta un choque con la ignición encendida
+562,ROUTE_OUT,
+563,ROUTE_IN,
+564,JAMMING_START,Se detectó presencia de un jammer
+565,JAMMING_STOP,"Evento para indicar que un jammer previamente detectado ya no está presente, actualmente no soportado por ningún dispositivo"
+566,MAGNET_BASE_CONNECTED,Se detectó la conexión de una base magnética (común en GPS portátiles o activos móviles).
+567,MAGNET_BASE_DISCONNECTED,Se desprendió el equipo de su base magnética. Suele ser alerta de robo o caída del dispositivo.
+568,ENGINE_SPEED,Reporte de la velocidad medida por el sensor del motor (más precisa que la del GPS).
+569,ENGINE_COOLANT_TEMP,Reporte de la temperatura del anticongelante. Vital para evitar motores fundidos.
+570,ENGINE_OIL_PRESSURE,"Alerta o reporte de la presión de aceite. Si es baja, el motor corre peligro inminente."
+571,ENGINE_RPM,Revoluciones por minuto del motor. Se usa para detectar si el chofer fuerza la máquina.
+572,ENGINE_SUDDEN_BRAKE,Frenado repentino detectado por datos de motor (caída brusca de velocidad en milisegundos).
+573,ENGINE_DTC,Se detectó un código de error genérico en la computadora del motor.
+574,IBUTTON_INSERTED,El conductor presentó su llave electrónica (iButton) en el lector para identificarse.
+575,IBUTTON_REMOVED,"Se retiró la llave iButton. En algunos sistemas, esto activa el inmovilizador automáticamente."
+576,STOP_LIMIT_IGNITION_ON,
+577,MOVING_AFTER_STOP_LIMIT,
+580,OBD_DISCONNECTED,El conector de diagnóstico fue desenchufado (posible sabotaje para dejar de reportar fallas).
+581,OBD_CONNECTED,El conector de diagnóstico ha sido conectado nuevamente.
+583,DTC_DETECTED,Check Engine. Un código de falla específico ha sido registrado (ej. fallo en un inyector).
+584,DTC_CLEARED,Los códigos de falla fueron borrados (ya sea por reparación o manualmente con escáner).
+585,STARTED_HIGH_RPM,
+586,ENDED_HIGH_RPM,
+587,HIGH_SPPED_LOW_RPM,
+588,LOW_SPPED_HIGH_RPM,
+589,SIM_IMMOBILIZER,
+590,DOOR_IMMOBILIZER,
+591,FAST_ACCELERATION,
+592,HARSH_BREAK,
+593,SHARP_TURN,
+594,OVER_SPEED,
+603,ENGINE_TEMP_ALARM,Sobrecalentamiento. La temperatura del refrigerante superó el límite (ej. +100°C). Crítico para evitar fundir el motor.
+604,LOW_OIL_LEVEL,Aceite Bajo. El sensor del cárter detecta que falta lubricante. Riesgo de daño interno grave.
+605,LOW_FUEL_ALARM,Reserva de Combustible. El nivel bajó del 10% o 15% (configurable).
+606,BATTERY_VOLTAGE,Voltaje de Batería (Vehículo). Indica si el alternador está cargando bien o si la batería principal está muriendo.
+607,BRAKE_AIR_PRESSURE_1,"Presión de Aire A. En camiones pesados, mide la presión de los tanques de frenado. Si baja, el camión se bloquea."
+608,BRAKE_AIR_PRESSURE_2,"Presión de Aire B. Segundo circuito de seguridad para frenos neumáticos."
+609,COOLANT_LEVEL_LOW,"Anticongeante Bajo. El nivel de líquido en el radiador es insuficiente."
+610,ENGINE_LOAD_HIGH,"Carga de Motor Excesiva. El motor está trabajando bajo mucho esfuerzo (ej. subidas con exceso de peso)."
+617,TOTAL_FUEL_USED,"Consumo Total. Litros totales acumulados por el motor desde que salió de fábrica."
+618,TRIP_FUEL_USED,"Consumo por Viaje. Cuánta gasolina/diésel se gastó desde que se encendió el motor esta última vez."
+619,FUEL_CONSUMPTION_AVG,"Rendimiento Promedio. (km/L). El dato clave para saber si el chofer está gastando de más."
+620,IDLE_FUEL_CONSUMPTION,"Consumo en Ralentí. Cuántos litros se desperdiciaron con el camión detenido y el motor encendido."
+631,MIL_STATUS_ON,"Se encendió la luz de Check Engine en el tablero. Hay un problema mecánico o eléctrico detectado."
+635,DEF_LEVEL_LOW,"Nivel bajo de AdBlue / Urea. En motores modernos (Euro 5/6), si esto llega a cero, el camión pierde potencia o deja de arrancar."
+642,DTC_CODE_DETECTED,"El sistema detectó un código de error específico (ej. P0300). Es el 'diagnóstico médico' de la falla."
+643,MIL_STATUS_OFF,"La luz de Check Engine se apagó (la falla fue corregida o borrada)."
+660,TPMS_LOW_PRESSURE,Baja presión de inflado. Una o más llantas están por debajo del nivel óptimo. Esto causa un exceso de consumo de combustible y riesgo de reventón.
+661,TPMS_HIGH_TEMPERATURE,Alta temperatura en llanta. Indica que el neumático se está calentando peligrosamente (posible falla en los frenos "pegados" o rodamiento dañado).
+700,FUEL_LEVEL_REPORT,Reporte periódico. Indica cuántos litros hay exactamente en el tanque en un momento dado (ej. 245 litros).
+701,FUEL_DRAIN_ALARM,ROBO / EXTRACCIÓN. El sensor detecta una caída brusca de combustible mientras el motor está apagado o el camión detenido.
+702,FUEL_REFILL_DETECTION,CARGA / RELLENO. El sensor detecta una subida de nivel. Se usa para cruzar contra el ticket de la gasolinera.
+703,FUEL_SENSOR_ERROR,"Falla del sensor. Indica que la varilla se desconectó, se cortó el cable o hay agua en el diésel que altera la lectura."
+714,EXT_POWER_RECONNECTED,"Energía restablecida. El GPS vuelve a recibir corriente de la batería principal tras un evento 512 (Desconexión). Es vital para saber si el mecánico o un saboteador reconectaron el equipo."
+724,PASSENGER_ALIGHTING,"Descenso de pasajero (salida por la puerta trasera)."
+725,PASSENGER_BOARDING,"Ascenso de pasajero (entrada por la puerta delantera)."
+726,PASSENGER_COUNT_RESET,"El contador de pasajeros se puso en cero (al inicio de una nueva ruta)."
+727,LOAD_WEIGHT_NORMAL,"El peso de la carga ha vuelto a los niveles estándar después de una descarga."
+728,LOAD_WEIGHT_CHANGE,Cambio detectado en el pesaje de los ejes (carga o descarga parcial).
+729,OVERLOAD_ALARM,Alerta de sobrecarga por encima del límite legal del vehículo.
+730,TEMPERATURE_SENSOR_DISCONNECTED,Se perdió la señal del sensor de temperatura (posible sabotaje o falla).
+731,HUMIDITY_SENSOR_DISCONNECTED,Se perdió la señal del sensor de humedad.
+740,TRAILER_BATTERY_LOW,La batería propia del remolque (si es independiente) tiene poco voltaje.
+741,CONTAINER_LOCKED,Cierre de candado electrónico o sello satelital.
+742,CONTAINER_TAMPERED,El sello del contenedor fue manipulado o intentaron forzarlo.
+743,CONTAINER_UNLOCKED,Apertura autorizada o no autorizada del sello del contenedor.
+744,TRAILER_CONNECTED,Se detectó la conexión de un remolque o plataforma (frecuente mediante sensor de quinta rueda o identificación Bluetooth).
+745,TRAILER_DISCONNECTED,Se detectó el desenganche del remolque. Es una alerta crítica para evitar el robo de la carga sola.
+746,TRAILER_IDENTIFIED,"Se leyó el ID específico del remolque (vía tag RFID o BLE), permitiendo saber exactamente qué caja lleva qué tractor."
+901,MAINTENANCE_DUE_BY_DISTANCE,"Alerta de mantenimiento alcanzada por kilometraje (ej. cambio de aceite a los 10,000 km)."
+902,MAINTENANCE_DUE_BY_ENGINE_HOURS,"Alerta de mantenimiento alcanzada por horas de motor (ideal para maquinaria pesada como excavadoras)."

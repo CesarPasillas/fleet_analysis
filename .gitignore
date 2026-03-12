@@ -1,0 +1,13 @@
+# Python
+backend/.venv/
+backend/app/ml/artifacts/
+__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Archivo.zip
