@@ -11,3 +11,11 @@ frontend/dist/
 # OS
 .DS_Store
 Archivo.zip
+backend/data/fleet_analytics.duckdb
+*.parquet
+data/pos/pos20240101_20240201_000000000000.csv
+*.csv
+data/ruta_1_asset_598_client_64.html
+data/ruta_asset_598_client_64.html
+fleet_Analysis/
+fleet_analysis_v2/
