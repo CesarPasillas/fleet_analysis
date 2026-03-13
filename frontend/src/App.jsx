@@ -704,6 +704,7 @@ function App() {
         intervals: [],
         totalGapSeconds: 0,
         avgGapSeconds: 0,
+        minGapSeconds: 0,
         maxGapSeconds: 0,
         missingGpsIntervals: 0,
         alertIntervals: 0,
@@ -748,6 +749,7 @@ function App() {
     }
 
     const totalGapSeconds = intervals.reduce((sum, item) => sum + item.gapSeconds, 0)
+    const minGapSeconds = intervals.reduce((minValue, item) => Math.min(minValue, item.gapSeconds), Number.POSITIVE_INFINITY)
     const maxGapSeconds = intervals.reduce((maxValue, item) => Math.max(maxValue, item.gapSeconds), 0)
     const missingGpsIntervals = intervals.filter((item) => item.missingGps).length
     const alertIntervals = intervals.filter((item) => item.alertGap).length
@@ -757,6 +759,7 @@ function App() {
       intervals,
       totalGapSeconds,
       avgGapSeconds,
+      minGapSeconds: Number.isFinite(minGapSeconds) ? minGapSeconds : 0,
       maxGapSeconds,
       missingGpsIntervals,
       alertIntervals,
@@ -1464,6 +1467,269 @@ function App() {
     mapWindow.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
   }
 
+  const openGapAnalysisWindow = (route, routeIndex) => {
+    const intervalRecords = getRouteIntervalRecords(route)
+    const gapAnalysis = buildRouteGapAnalysis(intervalRecords)
+
+    if (!Array.isArray(gapAnalysis.intervals) || gapAnalysis.intervals.length === 0) {
+      setError('No hay suficientes puntos con timestamp para graficar brechas en una ventana aparte.')
+      return
+    }
+
+    const popup = window.open('', '_blank', 'width=1280,height=860')
+    if (!popup) {
+      setError('No se pudo abrir la ventana. Revisa el bloqueador de popups del navegador.')
+      return
+    }
+
+    const safeIntervals = JSON.stringify(gapAnalysis.intervals).replaceAll('</', String.raw`<\/`)
+    const title = `Brechas de tiempo - Ruta #${routeIndex + 1} assetId=${routeDetection?.asset_id || '-'} clientId=${routeDetection?.client_id || '-'}`
+    const summary = {
+      total: gapAnalysis.intervals.length,
+      totalGap: formatGapDuration(gapAnalysis.totalGapSeconds),
+      avgGap: formatGapDuration(gapAnalysis.avgGapSeconds),
+      minGap: formatGapDuration(gapAnalysis.minGapSeconds),
+      maxGap: formatGapDuration(gapAnalysis.maxGapSeconds),
+      missingGps: gapAnalysis.missingGpsIntervals,
+      alertThreshold: GAP_ALERT_SECONDS,
+      alertIntervals: gapAnalysis.alertIntervals,
+    }
+
+    const safeSummary = JSON.stringify(summary).replaceAll('</', String.raw`<\/`)
+
+    const html = `
+      <!doctype html>
+      <html lang="es">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>${title}</title>
+          <style>
+            :root { color-scheme: light; }
+            body {
+              margin: 0;
+              font-family: Inter, system-ui, sans-serif;
+              background: #f8fafc;
+              color: #0f172a;
+            }
+            .container {
+              max-width: 1200px;
+              margin: 0 auto;
+              padding: 16px;
+            }
+            .card {
+              background: #ffffff;
+              border: 1px solid #e2e8f0;
+              border-radius: 10px;
+              padding: 14px;
+              margin-bottom: 14px;
+            }
+            .title {
+              margin: 0 0 8px;
+              font-size: 18px;
+            }
+            .summary {
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+              gap: 8px;
+              font-size: 13px;
+            }
+            .summary .pill {
+              background: #f1f5f9;
+              border: 1px solid #cbd5e1;
+              border-radius: 8px;
+              padding: 8px;
+            }
+            .chart-wrap {
+              border: 1px solid #e2e8f0;
+              border-radius: 10px;
+              padding: 10px;
+              background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            }
+            .legend {
+              display: flex;
+              gap: 12px;
+              flex-wrap: wrap;
+              font-size: 12px;
+              margin-bottom: 8px;
+            }
+            .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+            .dot.normal { background: #2563eb; }
+            .dot.missing { background: #f59e0b; }
+            .dot.alert { background: #dc2626; }
+            .chart {
+              position: relative;
+              height: 260px;
+              display: flex;
+              align-items: flex-end;
+              gap: 2px;
+              overflow-x: auto;
+              padding: 0 0 20px;
+              border-bottom: 1px solid #94a3b8;
+            }
+            .grid-line {
+              position: absolute;
+              left: 0;
+              right: 0;
+              border-top: 1px dashed #cbd5e1;
+              pointer-events: none;
+            }
+            .grid-label {
+              position: absolute;
+              right: 0;
+              transform: translateY(-50%);
+              background: #ffffffcc;
+              font-size: 11px;
+              padding: 1px 4px;
+              color: #475569;
+            }
+            .threshold {
+              position: absolute;
+              left: 0;
+              right: 0;
+              border-top: 2px solid #ef4444;
+              pointer-events: none;
+            }
+            .bar {
+              width: 8px;
+              min-width: 8px;
+              border-radius: 3px 3px 0 0;
+              background: #2563eb;
+            }
+            .bar.missing { background: #f59e0b; }
+            .bar.alert { background: #dc2626; }
+            table { width: 100%; border-collapse: collapse; font-size: 12px; }
+            th, td { border-bottom: 1px solid #e2e8f0; padding: 6px; text-align: left; white-space: nowrap; }
+            th { background: #f8fafc; position: sticky; top: 0; }
+            .table-wrap { max-height: 320px; overflow: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="card">
+              <h1 class="title">${title}</h1>
+              <div id="summary" class="summary"></div>
+            </div>
+
+            <div class="card">
+              <div class="legend">
+                <span><i class="dot normal"></i>Normal</span>
+                <span><i class="dot missing"></i>Sin GPS</span>
+                <span><i class="dot alert"></i>Brecha >= umbral</span>
+              </div>
+              <div id="chart" class="chart-wrap"></div>
+            </div>
+
+            <div class="card">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Desde</th>
+                      <th>Hasta</th>
+                      <th>Brecha (s)</th>
+                      <th>Sin GPS</th>
+                      <th>eventType</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <script>
+            const intervals = ${safeIntervals};
+            const summary = ${safeSummary};
+
+            const formatTimestamp = (value) => {
+              if (!value) return '';
+              const date = new Date(value);
+              if (Number.isNaN(date.getTime())) return String(value);
+              return date.toLocaleString('es-MX', {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+              });
+            };
+
+            const summaryNode = document.getElementById('summary');
+            summaryNode.innerHTML = [
+              ['Intervalos', String(summary.total)],
+              ['Tiempo acumulado', summary.totalGap],
+              ['Brecha promedio', summary.avgGap],
+              ['Brecha mínima', summary.minGap],
+              ['Brecha máxima', summary.maxGap],
+              ['Intervalos sin GPS', String(summary.missingGps)],
+              ['Brechas >= ' + String(summary.alertThreshold) + 's', String(summary.alertIntervals)],
+            ].map(([label, value]) =>
+              '<div class="pill"><strong>' + label + ':</strong> ' + value + '</div>'
+            ).join('');
+
+            const chartOuter = document.getElementById('chart');
+            const chart = document.createElement('div');
+            chart.className = 'chart';
+            chartOuter.appendChild(chart);
+
+            const maxGap = Math.max(...intervals.map((item) => Number(item.gapSeconds) || 0), 1);
+            [0, 25, 50, 75, 100].forEach((pct) => {
+              const line = document.createElement('div');
+              line.className = 'grid-line';
+              line.style.bottom = pct + '%';
+              chart.appendChild(line);
+
+              const label = document.createElement('div');
+              label.className = 'grid-label';
+              label.style.bottom = pct + '%';
+              label.textContent = Math.round((maxGap * pct) / 100) + ' s';
+              chart.appendChild(label);
+            });
+
+            const thresholdPct = Math.min(100, (summary.alertThreshold / maxGap) * 100);
+            const threshold = document.createElement('div');
+            threshold.className = 'threshold';
+            threshold.style.bottom = thresholdPct + '%';
+            chart.appendChild(threshold);
+
+            intervals.forEach((item) => {
+              const bar = document.createElement('div');
+              const barHeight = Math.max(6, Math.round((Number(item.gapSeconds) / maxGap) * 220));
+              bar.className = 'bar' +
+                (item.missingGps ? ' missing' : '') +
+                (Number(item.gapSeconds) >= Number(summary.alertThreshold) ? ' alert' : '');
+              bar.style.height = barHeight + 'px';
+              bar.title = [
+                'Intervalo #' + String(item.sequence),
+                'Brecha: ' + String(Number(item.gapSeconds).toFixed(1)) + ' s',
+                'Sin GPS: ' + (item.missingGps ? 'sí' : 'no'),
+                'Desde: ' + formatTimestamp(item.fromOrderTimestamp),
+                'Hasta: ' + formatTimestamp(item.toOrderTimestamp),
+              ].join(' | ');
+              chart.appendChild(bar);
+            });
+
+            const rowsNode = document.getElementById('rows');
+            rowsNode.innerHTML = intervals.map((item) =>
+              '<tr>' +
+              '<td>' + String(item.sequence) + '</td>' +
+              '<td>' + formatTimestamp(item.fromOrderTimestamp) + '</td>' +
+              '<td>' + formatTimestamp(item.toOrderTimestamp) + '</td>' +
+              '<td>' + String(Number(item.gapSeconds).toFixed(1)) + '</td>' +
+              '<td>' + (item.missingGps ? 'Sí' : 'No') + '</td>' +
+              '<td>' + String(item.fromEventType ?? '') + ' → ' + String(item.toEventType ?? '') + '</td>' +
+              '</tr>'
+            ).join('');
+          </script>
+        </body>
+      </html>
+    `
+
+    const blob = new Blob([html], { type: 'text/html' })
+    const blobUrl = URL.createObjectURL(blob)
+    popup.location.replace(blobUrl)
+    popup.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
+  }
+
   const buildMlClassRoadsIndex = () => {
     const index = {}
     const completeRoutes = Array.isArray(routeDetection?.complete_routes)
@@ -1855,6 +2121,15 @@ function App() {
         >
           Carreteras
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeMenu === 'administracion'}
+          className={`menu-tab ${activeMenu === 'administracion' ? 'active' : ''}`}
+          onClick={() => setActiveMenu('administracion')}
+        >
+          Administracion
+        </button>
       </div>
 
       {activeMenu === 'dashboard' && (
@@ -2039,42 +2314,6 @@ function App() {
           </button>
         </div>
 
-        <div className="manual-map-panel">
-          <h3>Pintar ruta manual (ventana nueva)</h3>
-          <div className="toolbar">
-            <label className="inline-label">
-              <span>Modo</span>
-              <select value={manualMapMode} onChange={(event) => setManualMapMode(event.target.value)}>
-                <option value="coords">Coordenadas (lat,lon)</option>
-                <option value="olc">OLC</option>
-              </select>
-            </label>
-            <button onClick={openManualMapWindow}>Abrir mapa manual</button>
-          </div>
-          <label>
-            <span>
-              {manualMapMode === 'coords'
-                ? 'Puntos en orden (lat,lon), uno por línea'
-                : 'OLC en orden, uno por línea'}
-            </span>
-            <textarea
-              rows={6}
-              value={manualMapInput}
-              onChange={(event) => setManualMapInput(event.target.value)}
-              placeholder={
-                manualMapMode === 'coords'
-                  ? '31.002765,-110.247512\n31.003100,-110.248000'
-                  : '853G7CV9+FR5\n853G7CV8+XQ'
-              }
-            />
-          </label>
-          <p className="subtitle">
-            {manualMapMode === 'coords'
-              ? 'Usa latitud y longitud separadas por coma o espacio.'
-              : 'El modo OLC usa los OLC ya cargados para este asset/client y los pinta en el orden capturado.'}
-          </p>
-        </div>
-
         {routeDetection && (
           <>
             <p className="subtitle">
@@ -2100,6 +2339,7 @@ function App() {
                     <th>Total eventos</th>
                     <th>Tipos únicos</th>
                     <th>Puntos GPS</th>
+                    <th>Brecha mínima (s)</th>
                     <th>Match carreteras</th>
                     <th>Carreteras detectadas</th>
                     <th>Ruta ML</th>
@@ -2109,6 +2349,7 @@ function App() {
                 <tbody>
                   {routeDetection.complete_routes.map((route) => {
                     const mlPrediction = mlPredictionsByRoute[getRouteKey(route)]
+                    const routeGapAnalysis = buildRouteGapAnalysis(getRouteIntervalRecords(route))
                     const mlConfidenceLabel = Number.isFinite(Number(mlPrediction?.confidence))
                       ? `${(Number(mlPrediction.confidence) * 100).toFixed(1)}%`
                       : ''
@@ -2121,6 +2362,7 @@ function App() {
                       <td>{route.total_events}</td>
                       <td>{route.unique_event_types}</td>
                       <td>{route.total_gps_points}</td>
+                      <td>{routeGapAnalysis.intervals.length > 0 ? routeGapAnalysis.minGapSeconds.toFixed(1) : ''}</td>
                       <td>
                         {route.road_match_ratio == null
                           ? '0.0%'
@@ -2134,7 +2376,7 @@ function App() {
                   })}
                   {routeDetection.complete_routes.length === 0 && (
                     <tr>
-                      <td colSpan={11}>No se detectaron rutas completas 519→520 para este asset/client.</td>
+                      <td colSpan={12}>No se detectaron rutas completas 519→520 para este asset/client.</td>
                     </tr>
                   )}
                 </tbody>
@@ -2207,6 +2449,9 @@ function App() {
                         <button onClick={() => openMlPredictedRouteMapWindow(route, routeIndex)}>
                           Ver mapa ruta ML
                         </button>
+                        <button onClick={() => openGapAnalysisWindow(route, routeIndex)}>
+                          Ver gráfico en ventana aparte
+                        </button>
                       </div>
                       <div className="table-wrap">
                         <table>
@@ -2241,6 +2486,7 @@ function App() {
                         Análisis de brechas temporales (ruta original): intervalos {gapAnalysis.intervals.length} ·
                         tiempo acumulado {formatGapDuration(gapAnalysis.totalGapSeconds)} ·
                         brecha promedio {formatGapDuration(gapAnalysis.avgGapSeconds)} ·
+                        brecha mínima {formatGapDuration(gapAnalysis.minGapSeconds)} ·
                         brecha máxima {formatGapDuration(gapAnalysis.maxGapSeconds)} ·
                         intervalos sin GPS {gapAnalysis.missingGpsIntervals} ·
                         brechas &gt;= {GAP_ALERT_SECONDS}s {gapAnalysis.alertIntervals}
@@ -2353,56 +2599,6 @@ function App() {
                 </tbody>
               </table>
             </div>
-
-            <h3>Todos los registros del asset/client (todos los eventType)</h3>
-            <p className="subtitle">
-              Total registros: {(routeDetection.all_records_count || 0).toLocaleString()}
-            </p>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Orden</th>
-                    <th>GPS</th>
-                    <th>Server</th>
-                    <th>eventType</th>
-                    <th>Key</th>
-                    <th>Description</th>
-                    <th>Carretera</th>
-                    <th>Dist. a carretera (m)</th>
-                    <th>Lat</th>
-                    <th>Lon</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(routeDetection.all_records || []).map((record) => (
-                    <tr
-                      key={`all-record-${record.order_timestamp || 'na'}-${record.gps_timestamp || 'na'}-${record.server_timestamp || 'na'}-${record.event_type ?? 'na'}-${record.latitude ?? 'na'}-${record.longitude ?? 'na'}`}
-                    >
-                      <td>{formatTimestamp(record.order_timestamp)}</td>
-                      <td>{formatTimestamp(record.gps_timestamp)}</td>
-                      <td>{formatTimestamp(record.server_timestamp)}</td>
-                      <td>{record.event_type ?? ''}</td>
-                      <td>{record.event_key || ''}</td>
-                      <td>{record.event_description || ''}</td>
-                      <td>{record.matched_road_label || ''}</td>
-                      <td>
-                        {record.matched_road_distance_m == null
-                          ? ''
-                          : Number(record.matched_road_distance_m).toFixed(1)}
-                      </td>
-                      <td>{record.latitude ?? ''}</td>
-                      <td>{record.longitude ?? ''}</td>
-                    </tr>
-                  ))}
-                  {(routeDetection.all_records || []).length === 0 && (
-                    <tr>
-                      <td colSpan={10}>No hay registros para este asset/client.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
           </>
         )}
       </section>
@@ -2439,6 +2635,47 @@ function App() {
           <p className="subtitle">
             Usa el selector para filtrar una carretera específica o elige Todas para visualizar toda la red cargada.
           </p>
+        </section>
+      )}
+
+      {activeMenu === 'administracion' && (
+        <section className="card">
+          <h2>Administracion</h2>
+          <div className="manual-map-panel">
+            <h3>Pintar ruta manual (ventana nueva)</h3>
+            <div className="toolbar">
+              <label className="inline-label">
+                <span>Modo</span>
+                <select value={manualMapMode} onChange={(event) => setManualMapMode(event.target.value)}>
+                  <option value="coords">Coordenadas (lat,lon)</option>
+                  <option value="olc">OLC</option>
+                </select>
+              </label>
+              <button onClick={openManualMapWindow}>Abrir mapa manual</button>
+            </div>
+            <label>
+              <span>
+                {manualMapMode === 'coords'
+                  ? 'Puntos en orden (lat,lon), uno por línea'
+                  : 'OLC en orden, uno por línea'}
+              </span>
+              <textarea
+                rows={6}
+                value={manualMapInput}
+                onChange={(event) => setManualMapInput(event.target.value)}
+                placeholder={
+                  manualMapMode === 'coords'
+                    ? '31.002765,-110.247512\n31.003100,-110.248000'
+                    : '853G7CV9+FR5\n853G7CV8+XQ'
+                }
+              />
+            </label>
+            <p className="subtitle">
+              {manualMapMode === 'coords'
+                ? 'Usa latitud y longitud separadas por coma o espacio.'
+                : 'El modo OLC usa los OLC ya cargados para este asset/client y los pinta en el orden capturado.'}
+            </p>
+          </div>
         </section>
       )}
 
