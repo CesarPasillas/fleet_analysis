@@ -1,21 +1,43 @@
 # Python
+.venv/
+.venv311/
 backend/.venv/
-backend/app/ml/artifacts/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
 # Node
 frontend/node_modules/
 frontend/dist/
 
-# OS
-.DS_Store
-Archivo.zip
+# Env — cada usuario crea su propio .env a partir de .env.example
+backend/.env
+.env
+
+# Base de datos y datos raw (se reconstruyen con build_snapshot)
 backend/data/fleet_analytics.duckdb
-*.parquet
-data/pos/pos20240101_20240201_000000000000.csv
-*.csv
-data/ruta_1_asset_598_client_64.html
-data/ruta_asset_598_client_64.html
+backend/data/pos_parquet/
+backend/data/*.parquet
+data/
+
+# Archivos temporales / OS
+.DS_Store
+*.zip
+
+# Artefactos ML duplicados en raiz (los originales van en backend/app/ml/artifacts/)
+/app/
+
+# Notebooks temporales sin nombre
+data/Untitled-*.ipynb
+
+# Proyectos viejos
 fleet_Analysis/
 fleet_analysis_v2/
+
+# CSVs de datos de entrada (se excluyen globalmente)
+*.csv
+# Excepciones: CSVs de entrenamiento que sí van al repo
+!backend/data/routes_training.csv
+!backend/data/route_geometry_training.csv
+!backend/data/route_geometry_training_batch.csv

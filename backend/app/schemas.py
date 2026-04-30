@@ -4,12 +4,11 @@ from pydantic import BaseModel, Field
 
 
 class RouteFeatures(BaseModel):
+    start_lat: float = Field(..., ge=-90, le=90)
+    start_lon: float = Field(..., ge=-180, le=180)
     distance_km: float = Field(..., ge=0)
-    traffic_level: float = Field(..., ge=0, le=10)
-    weather_index: float = Field(..., ge=0, le=10)
     hour_of_day: int = Field(..., ge=0, le=23)
     day_of_week: int = Field(..., ge=0, le=6)
-    vehicle_load_kg: float = Field(..., ge=0)
 
 
 class PredictionResponse(BaseModel):
@@ -131,7 +130,11 @@ class CompleteRoute(BaseModel):
     unique_event_types: int
     total_gps_points: int
     matched_roads: list[str] = []
+    inferred_roads: list[str] = []
+    predicted_route_points: list[list[float]] = []
+    predicted_route_roads: list[str] = []
     road_match_ratio: float | None = None
+    is_primary: bool = False
     start_index: int
     end_index: int
     components: list[dict[str, Any]]
@@ -176,3 +179,92 @@ class RouteDetectionResponse(BaseModel):
     incomplete_routes: list[IncompleteRoute]
     all_records_count: int
     all_records: list[AssetRecord]
+
+
+class SignalLossSegment(BaseModel):
+    gps_start: str | None = None
+    gps_end: str | None = None
+    server_received_at: str | None = None
+    duration_minutes: float
+    num_records: int
+    coordinates: list[list[float]] = []
+
+
+class SignalLossPoint(BaseModel):
+    gps_timestamp: str | None = None
+    server_timestamp: str | None = None
+    diff_seconds: float | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    is_signal_loss: bool = False
+
+
+class SignalLossResponse(BaseModel):
+    asset_id: int
+    client_id: int
+    total_records: int
+    signal_loss_segments_count: int
+    total_signal_loss_minutes: float
+    segments: list[SignalLossSegment]
+    all_points: list[SignalLossPoint]
+    error: str | None = None
+
+
+class SignalLossAnchorPoint(BaseModel):
+    gps_timestamp: str | None = None
+    server_timestamp: str | None = None
+    diff_seconds: float | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class SignalLossAnomaly(BaseModel):
+    segment_index: int
+    gps_start: str | None = None
+    gps_end: str | None = None
+    duration_minutes: float
+    num_records: int
+    point_before: SignalLossAnchorPoint | None = None
+    point_after: SignalLossAnchorPoint | None = None
+    distance_km: float | None = None
+    implied_speed_kmh: float | None = None
+    category: str
+
+
+class VehicleStop(BaseModel):
+    stop_index: int
+    start_timestamp: str | None = None
+    end_timestamp: str | None = None
+    duration_minutes: float
+    latitude: float | None = None
+    longitude: float | None = None
+    num_records: int
+    event_keys: list[str] = []
+    event_type_category: str | None = None
+    geo_category: str | None = None
+    nearby_place: str | None = None
+    final_category: str
+    confidence: str
+
+
+class StopsResponse(BaseModel):
+    asset_id: int
+    client_id: int
+    total_records: int
+    total_stops: int
+    total_stop_minutes: float
+    min_stop_minutes: float
+    use_geo: bool
+    stops: list[VehicleStop]
+    error: str | None = None
+
+
+class SignalLossAnomaliesResponse(BaseModel):
+    asset_id: int
+    client_id: int
+    total_records: int
+    signal_loss_segments_count: int
+    total_signal_loss_minutes: float
+    max_speed_kmh_threshold: float
+    anomalies: list[SignalLossAnomaly]
+    error: str | None = None

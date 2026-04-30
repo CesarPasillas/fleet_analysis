@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +20,9 @@ from app.analytics_store import (
     get_snapshot_status,
     query_merged_rows,
 )
+from app.signal_loss_detection import detect_signal_loss
+from app.signal_loss_anomalies import classify_signal_loss_anomalies
+from app.stop_detection import detect_and_classify_stops
 from app.digital_twin import get_asset_twin_state, get_fleet_twin_summary
 from app.eventtype_joiner import load_and_merge_pos_eventtype
 from app.eventtype_reader import get_eventtype_csv_path
@@ -31,6 +37,9 @@ from app.schemas import (
     PredictionResponse,
     RouteDetectionResponse,
     RouteFeatures,
+    SignalLossAnomaliesResponse,
+    SignalLossResponse,
+    StopsResponse,
     SnapshotBuildRequest,
     SnapshotBuildResponse,
     SnapshotStatusResponse,
@@ -40,14 +49,43 @@ from app.schemas import (
     TrainResponse,
 )
 
-app = FastAPI(title="Route Analysis ML API", version="0.1.0")
+logger = logging.getLogger(__name__)
+
 ml_service = RouteMLService()
 
+# In-memory TTL cache for /routes/detect responses.
+# Key: (asset_id, client_id)  Value: (timestamp_stored, result_dict)
+_ROUTE_DETECT_CACHE: dict[tuple[int, int], tuple[float, dict]] = {}
+_ROUTE_CACHE_TTL_SECONDS = int(os.getenv("ROUTE_CACHE_TTL_SECONDS", "300"))  # 5 min default
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_TRAINING_DATA_PATH = BACKEND_DIR / "data" / "routes_training.csv"
+DEFAULT_TRAINING_DATA_PATH = BACKEND_DIR / "data" / "route_geometry_training_batch.csv"
 DEFAULT_CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 load_dotenv(BACKEND_DIR / ".env")
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Auto-train the ML model on startup if artifacts are missing."""
+    if not ml_service.model_path.exists() or not ml_service.metadata_path.exists():
+        if DEFAULT_TRAINING_DATA_PATH.exists():
+            logger.info("ML artifacts missing — auto-training from %s", DEFAULT_TRAINING_DATA_PATH)
+            try:
+                samples, accuracy = ml_service.train(csv_path=str(DEFAULT_TRAINING_DATA_PATH))
+                logger.info("Auto-training complete: %d samples, accuracy=%.4f", samples, accuracy)
+            except Exception as exc:
+                logger.warning("Auto-training failed: %s", exc)
+        else:
+            logger.warning(
+                "ML artifacts missing and training data not found at %s. "
+                "Call POST /ml/train to train the model.",
+                DEFAULT_TRAINING_DATA_PATH,
+            )
+    yield
+
+
+app = FastAPI(title="Route Analysis ML API", version="0.1.0", lifespan=lifespan)
 
 
 def get_cors_origins() -> list[str]:
@@ -162,6 +200,7 @@ def merge_eventtype_rows(
     asset_id: int | None = None,
     client_id: int | None = None,
     event_type: int | None = None,
+    event_type_2: int | None = None,
 ) -> MergeEventTypeRowsResponse:
     safe_limit = max(1, min(limit, 1000))
     safe_offset = max(0, offset)
@@ -173,6 +212,7 @@ def merge_eventtype_rows(
             asset_id=asset_id,
             client_id=client_id,
             event_type=event_type,
+            event_type_2=event_type_2,
         )
 
         return MergeEventTypeRowsResponse(
@@ -201,8 +241,10 @@ def merge_eventtype_rows(
     if client_id is not None and "clientId" in filtered.columns:
         filtered = filtered[pd.to_numeric(filtered["clientId"], errors="coerce") == client_id]
 
-    if event_type is not None and "eventType" in filtered.columns:
-        filtered = filtered[pd.to_numeric(filtered["eventType"], errors="coerce") == event_type]
+    selected_event_types = sorted({value for value in [event_type, event_type_2] if value is not None})
+    if selected_event_types and "eventType" in filtered.columns:
+        numeric_event_type = pd.to_numeric(filtered["eventType"], errors="coerce")
+        filtered = filtered[numeric_event_type.isin(selected_event_types)]
 
     page = filtered.iloc[safe_offset : safe_offset + safe_limit]
 
@@ -374,6 +416,16 @@ def twin_asset_state(asset_id: int, client_id: int | None = None, recent_events:
     },
 )
 def detect_routes(asset_id: int, client_id: int) -> RouteDetectionResponse:
+    cache_key = (asset_id, client_id)
+    cached = _ROUTE_DETECT_CACHE.get(cache_key)
+    if cached is not None:
+        stored_at, result = cached
+        if time.monotonic() - stored_at < _ROUTE_CACHE_TTL_SECONDS:
+            logger.info("Cache HIT for asset_id=%d client_id=%d", asset_id, client_id)
+            return RouteDetectionResponse(**result)
+        # expired — remove stale entry
+        del _ROUTE_DETECT_CACHE[cache_key]
+
     try:
         merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
         result = detect_routes_by_asset_client(asset_id=asset_id, client_id=client_id, merged=merged_subset)
@@ -388,4 +440,153 @@ def detect_routes(asset_id: int, client_id: int) -> RouteDetectionResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Route detection failed: {exc}") from exc
 
+    _ROUTE_DETECT_CACHE[cache_key] = (time.monotonic(), result)
     return RouteDetectionResponse(**result)
+
+
+@app.get(
+    "/routes/stops",
+    responses={
+        404: {"description": "No se encontraron registros para este asset/client"},
+        500: {"description": "Error en detección de paradas"},
+    },
+)
+def stops(
+    asset_id: int,
+    client_id: int,
+    min_stop_minutes: float = 5.0,
+    use_geo: bool = False,
+) -> StopsResponse:
+    try:
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
+    except SnapshotUnavailableError:
+        try:
+            merged = load_and_merge_pos_eventtype()
+            asset_mask = pd.to_numeric(merged.get("assetId", pd.Series(dtype="object")), errors="coerce") == asset_id
+            client_mask = pd.to_numeric(merged.get("clientId", pd.Series(dtype="object")), errors="coerce") == client_id
+            merged_subset = merged[asset_mask & client_mask].copy()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Error cargando datos: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error accediendo snapshot: {exc}") from exc
+
+    try:
+        result = detect_and_classify_stops(
+            merged_subset,
+            min_stop_minutes=min_stop_minutes,
+            use_geo=use_geo,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error en detección de paradas: {exc}") from exc
+
+    return StopsResponse(
+        asset_id=asset_id,
+        client_id=client_id,
+        min_stop_minutes=min_stop_minutes,
+        use_geo=use_geo,
+        **result,
+    )
+
+
+@app.get(
+    "/routes/signal-loss/anomalies",
+    responses={
+        404: {"description": "No se encontraron registros para este asset/client"},
+        500: {"description": "Error inesperado en clasificación de anomalías"},
+    },
+)
+def signal_loss_anomalies(
+    asset_id: int,
+    client_id: int,
+    max_speed_kmh: float = 120.0,
+) -> SignalLossAnomaliesResponse:
+    try:
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
+    except SnapshotUnavailableError:
+        try:
+            merged = load_and_merge_pos_eventtype()
+            asset_mask = pd.to_numeric(merged.get("assetId", pd.Series(dtype="object")), errors="coerce") == asset_id
+            client_mask = pd.to_numeric(merged.get("clientId", pd.Series(dtype="object")), errors="coerce") == client_id
+            merged_subset = merged[asset_mask & client_mask].copy()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Error cargando datos: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error accediendo snapshot: {exc}") from exc
+
+    try:
+        result = classify_signal_loss_anomalies(merged_subset, max_speed_kmh=max_speed_kmh)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error en clasificación de anomalías: {exc}") from exc
+
+    return SignalLossAnomaliesResponse(
+        asset_id=asset_id,
+        client_id=client_id,
+        total_records=result["total_records"],
+        signal_loss_segments_count=result["signal_loss_segments_count"],
+        total_signal_loss_minutes=result["total_signal_loss_minutes"],
+        max_speed_kmh_threshold=max_speed_kmh,
+        anomalies=result["anomalies"],
+        error=result.get("error"),
+    )
+
+
+@app.get(
+    "/routes/signal-loss",
+    responses={
+        404: {"description": "No se encontraron registros para este asset/client"},
+        500: {"description": "Error inesperado en detección de pérdida de señal"},
+    },
+)
+def signal_loss(asset_id: int, client_id: int) -> SignalLossResponse:
+    try:
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
+    except SnapshotUnavailableError:
+        try:
+            from app.eventtype_joiner import load_and_merge_pos_eventtype
+            import pandas as pd
+
+            merged = load_and_merge_pos_eventtype()
+            asset_mask = pd.to_numeric(merged.get("assetId", pd.Series(dtype="object")), errors="coerce") == asset_id
+            client_mask = pd.to_numeric(merged.get("clientId", pd.Series(dtype="object")), errors="coerce") == client_id
+            merged_subset = merged[asset_mask & client_mask].copy()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Error cargando datos: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error accediendo snapshot: {exc}") from exc
+
+    try:
+        result = detect_signal_loss(merged_subset)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error en detección de señal: {exc}") from exc
+
+    return SignalLossResponse(asset_id=asset_id, client_id=client_id, **result)
+
+
+@app.delete(
+    "/routes/detect/cache",
+    responses={200: {"description": "Cache cleared"}},
+)
+def clear_route_detect_cache(asset_id: int | None = None, client_id: int | None = None) -> dict:
+    """Invalidate cached route detection results.
+
+    If asset_id and client_id are both provided, only that entry is removed.
+    Otherwise the entire cache is cleared.
+    """
+    if asset_id is not None and client_id is not None:
+        removed = 1 if _ROUTE_DETECT_CACHE.pop((asset_id, client_id), None) is not None else 0
+    else:
+        removed = len(_ROUTE_DETECT_CACHE)
+        _ROUTE_DETECT_CACHE.clear()
+    return {"cleared": removed}

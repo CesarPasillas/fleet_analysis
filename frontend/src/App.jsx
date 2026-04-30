@@ -33,6 +33,7 @@ function App() {
   const [assetIdFilter, setAssetIdFilter] = useState('')
   const [clientIdFilter, setClientIdFilter] = useState('')
   const [eventTypeFilter, setEventTypeFilter] = useState('')
+  const [eventTypeFilter2, setEventTypeFilter2] = useState('')
   const [quickSearch, setQuickSearch] = useState('')
   const [sortBy, setSortBy] = useState('')
   const [sortDirection, setSortDirection] = useState('asc')
@@ -42,6 +43,11 @@ function App() {
   const [mlPredictionsByRoute, setMlPredictionsByRoute] = useState({})
   const [mlPredictionsLoading, setMlPredictionsLoading] = useState(false)
   const [routeLoading, setRouteLoading] = useState(false)
+  const [signalLossData, setSignalLossData] = useState(null)
+  const [signalLossLoading, setSignalLossLoading] = useState(false)
+  const [signalLossAnomalies, setSignalLossAnomalies] = useState(null)
+  const [stopsData, setStopsData] = useState(null)
+  const [stopsLoading, setStopsLoading] = useState(false)
   const [routePointsFilterMode, setRoutePointsFilterMode] = useState('all')
   const [routePointsEventTypeFilter, setRoutePointsEventTypeFilter] = useState('')
   const [manualMapMode, setManualMapMode] = useState('coords')
@@ -54,6 +60,7 @@ function App() {
     nextAssetIdFilter = assetIdFilter,
     nextClientIdFilter = clientIdFilter,
     nextEventTypeFilter = eventTypeFilter,
+    nextEventTypeFilter2 = eventTypeFilter2,
   ) => {
     setRowsLoading(true)
     setError('')
@@ -70,6 +77,9 @@ function App() {
       }
       if (nextEventTypeFilter.trim() !== '') {
         query.set('event_type', nextEventTypeFilter.trim())
+      }
+      if (nextEventTypeFilter2.trim() !== '') {
+        query.set('event_type_2', nextEventTypeFilter2.trim())
       }
       const response = await fetch(`${API_BASE}/data/merge-eventtype/rows?${query.toString()}`)
       if (!response.ok) {
@@ -138,28 +148,41 @@ function App() {
 
   const detectRoutesByValues = async (assetValue, clientValue, clearPrevious = true) => {
     setRouteLoading(true)
+    setSignalLossLoading(true)
     setError('')
     if (clearPrevious) {
       setRouteDetection(null)
+      setSignalLossData(null)
+      setSignalLossAnomalies(null)
+      setStopsData(null)
     }
 
     if (!assetValue || !clientValue) {
       setRouteLoading(false)
+      setSignalLossLoading(false)
       setError('Debes indicar assetId y clientId para detectar rutas')
       return
     }
 
+    const query = new URLSearchParams({ asset_id: assetValue, client_id: clientValue })
+
+    setStopsLoading(true)
+    const [routeResult, signalResult, anomalyResult, stopsResult] = await Promise.allSettled([
+      fetch(`${API_BASE}/routes/detect?${query.toString()}`),
+      fetch(`${API_BASE}/routes/signal-loss?${query.toString()}`),
+      fetch(`${API_BASE}/routes/signal-loss/anomalies?${query.toString()}`),
+      fetch(`${API_BASE}/routes/stops?${query.toString()}`),
+    ])
+
+    // --- rutas ---
     try {
-      const query = new URLSearchParams({
-        asset_id: assetValue,
-        client_id: clientValue,
-      })
-      const response = await fetch(`${API_BASE}/routes/detect?${query.toString()}`)
-      if (!response.ok) {
-        const detail = await response.json()
+      if (routeResult.status === 'rejected') throw new Error(routeResult.reason?.message || 'Error de red')
+      const resp = routeResult.value
+      if (!resp.ok) {
+        const detail = await resp.json()
         throw new Error(detail.detail || 'No se pudieron detectar rutas')
       }
-      const data = await response.json()
+      const data = await resp.json()
       setRouteDetection(data)
       setRoutePointsFilterMode('all')
       setRoutePointsEventTypeFilter('')
@@ -167,6 +190,32 @@ function App() {
       setError(err.message)
     } finally {
       setRouteLoading(false)
+    }
+
+    // --- señal ---
+    try {
+      if (signalResult.status === 'fulfilled' && signalResult.value.ok) {
+        const data = await signalResult.value.json()
+        setSignalLossData(data)
+      }
+    } finally {
+      setSignalLossLoading(false)
+    }
+
+    // --- anomalías de señal ---
+    if (anomalyResult.status === 'fulfilled' && anomalyResult.value.ok) {
+      const data = await anomalyResult.value.json()
+      setSignalLossAnomalies(data)
+    }
+
+    // --- paradas ---
+    try {
+      if (stopsResult.status === 'fulfilled' && stopsResult.value.ok) {
+        const data = await stopsResult.value.json()
+        setStopsData(data)
+      }
+    } finally {
+      setStopsLoading(false)
     }
   }
 
@@ -178,36 +227,37 @@ function App() {
 
   const handlePrevPage = () => {
     const nextOffset = Math.max(0, offset - pageSize)
-    loadRows(nextOffset, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter)
+    loadRows(nextOffset, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter, eventTypeFilter2)
   }
 
   const handleNextPage = () => {
     const totalRows = rowsData?.total_rows || 0
     const nextOffset = offset + pageSize
     if (nextOffset < totalRows) {
-      loadRows(nextOffset, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter)
+      loadRows(nextOffset, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter, eventTypeFilter2)
     }
   }
 
   const handlePageSizeChange = (event) => {
     const nextLimit = Number(event.target.value)
     setPageSize(nextLimit)
-    loadRows(0, nextLimit, assetIdFilter, clientIdFilter, eventTypeFilter)
+    loadRows(0, nextLimit, assetIdFilter, clientIdFilter, eventTypeFilter, eventTypeFilter2)
   }
 
   const handleApplyFilters = () => {
     setRouteAssetId(assetIdFilter.trim())
     setRouteClientId(clientIdFilter.trim())
-    loadRows(0, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter)
+    loadRows(0, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter, eventTypeFilter2)
   }
 
   const handleClearFilters = () => {
     setAssetIdFilter('')
     setClientIdFilter('')
     setEventTypeFilter('')
+    setEventTypeFilter2('')
     setRouteAssetId('')
     setRouteClientId('')
-    loadRows(0, pageSize, '', '', '')
+    loadRows(0, pageSize, '', '', '', '')
   }
 
   const handleSort = (columnName) => {
@@ -279,22 +329,19 @@ function App() {
 
   const buildMlFeaturesFromRoute = (route) => {
     const startDate = new Date(route?.start_timestamp || '')
-    const durationHours = Number(route?.duration_hours)
-    const totalEvents = Number(route?.total_events)
+    const hasValidStartDate = !Number.isNaN(startDate.getTime())
+    const pandasDayOfWeek = hasValidStartDate ? ((startDate.getUTCDay() + 6) % 7) : 1
 
-    const eventsPerHour = Number.isFinite(durationHours) && durationHours > 0
-      ? totalEvents / durationHours
-      : 0
-
-    const trafficLevel = clampRange(eventsPerHour / 20, 0, 10)
+    const firstComp = Array.isArray(route?.components) ? route.components.find(
+      (c) => c.latitude != null && c.longitude != null
+    ) : null
 
     return {
+      start_lat: firstComp?.latitude ?? 0,
+      start_lon: firstComp?.longitude ?? 0,
       distance_km: clampRange(Number(route?.distance_km), 0, Number.MAX_SAFE_INTEGER),
-      traffic_level: trafficLevel,
-      weather_index: 3,
-      hour_of_day: Number.isNaN(startDate.getTime()) ? 9 : startDate.getHours(),
-      day_of_week: Number.isNaN(startDate.getTime()) ? 1 : startDate.getDay(),
-      vehicle_load_kg: 1000,
+      hour_of_day: hasValidStartDate ? startDate.getUTCHours() : 9,
+      day_of_week: pandasDayOfWeek,
     }
   }
 
@@ -337,7 +384,12 @@ function App() {
 
     if (!assetValue || !clientValue) {
       setRouteDetection(null)
+      setSignalLossData(null)
+      setSignalLossAnomalies(null)
+      setStopsData(null)
       setRouteLoading(false)
+      setSignalLossLoading(false)
+      setStopsLoading(false)
       return
     }
 
@@ -539,6 +591,20 @@ function App() {
     return rowsData.columns
   })()
 
+  const getRouteRoadLabels = (route) => {
+    const inferred = Array.isArray(route?.inferred_roads)
+      ? route.inferred_roads.map((value) => String(value || '').trim()).filter(Boolean)
+      : []
+    if (inferred.length > 0) {
+      return inferred
+    }
+
+    const matched = Array.isArray(route?.matched_roads)
+      ? route.matched_roads.map((value) => String(value || '').trim()).filter(Boolean)
+      : []
+    return matched
+  }
+
   const getRouteIntervalRecords = (route) => {
     const allRecords = routeDetection?.all_records || []
     if (allRecords.length === 0) {
@@ -609,9 +675,13 @@ function App() {
     return ''
   }
 
-  const renderIntervalRecordRow = (route, record, recordIndex) => {
+  const renderIntervalRecordRow = (route, record, recordIndex, estimatedGpsMetadataBySourceIndex = {}) => {
     const role = getIntervalRecordRole(route, record)
-    const rowClassName = getIntervalRowClassName(role)
+    const estimatedMetadata = estimatedGpsMetadataBySourceIndex[recordIndex + 1] || null
+    const baseRowClassName = getIntervalRowClassName(role)
+    const rowClassName = [baseRowClassName, estimatedMetadata?.isEstimated ? 'route-point-row-estimated' : '']
+      .filter(Boolean)
+      .join(' ')
     const roleLabel = getIntervalRoleLabel(role)
 
     return (
@@ -622,6 +692,7 @@ function App() {
         <td>{recordIndex + 1}</td>
         <td>
           {roleLabel ? <span className={`event-badge ${role}`}>{roleLabel}</span> : ''}
+          {estimatedMetadata?.isEstimated ? <span className="event-badge estimated">EST</span> : ''}
         </td>
         <td>{formatTimestamp(record.order_timestamp)}</td>
         <td>{formatTimestamp(record.gps_timestamp)}</td>
@@ -635,18 +706,28 @@ function App() {
             ? ''
             : Number(record.matched_road_distance_m).toFixed(1)}
         </td>
+        <td>{estimatedMetadata?.isEstimated ? 'Si' : 'No'}</td>
+        <td>{estimatedMetadata?.pointDescription || ''}</td>
         <td>{record.latitude ?? ''}</td>
         <td>{record.longitude ?? ''}</td>
       </tr>
     )
   }
 
-  const filterIntervalRecords = (route, records) => {
+  const filterIntervalRecords = (route, records, estimatedGpsMetadataBySourceIndex = {}) => {
     if (routePointsFilterMode === 'boundaries') {
       return records.filter((record) => {
         const role = getIntervalRecordRole(route, record)
         return role === 'start' || role === 'end'
       })
+    }
+
+    if (routePointsFilterMode === 'estimated') {
+      return records.filter((_, recordIndex) => estimatedGpsMetadataBySourceIndex[recordIndex + 1]?.isEstimated)
+    }
+
+    if (routePointsFilterMode === 'original') {
+      return records.filter((_, recordIndex) => !estimatedGpsMetadataBySourceIndex[recordIndex + 1]?.isEstimated)
     }
 
     if (routePointsFilterMode === 'eventType') {
@@ -678,6 +759,119 @@ function App() {
     const latitude = Number(record?.latitude)
     const longitude = Number(record?.longitude)
     return Number.isFinite(latitude) && Number.isFinite(longitude)
+  }
+
+  const findPreviousValidGpsRecord = (records, startIndex) => {
+    for (let index = startIndex - 1; index >= 0; index -= 1) {
+      const candidate = records[index]
+      if (hasValidGpsPoint(candidate)) {
+        return { index, record: candidate }
+      }
+    }
+    return null
+  }
+
+  const findNextValidGpsRecord = (records, startIndex) => {
+    for (let index = startIndex + 1; index < records.length; index += 1) {
+      const candidate = records[index]
+      if (hasValidGpsPoint(candidate)) {
+        return { index, record: candidate }
+      }
+    }
+    return null
+  }
+
+  const buildGpsPointsForRouteMap = (route) => {
+    const records = getRouteIntervalRecords(route)
+    if (!Array.isArray(records) || records.length === 0) {
+      return []
+    }
+
+    const points = []
+    records.forEach((record, index) => {
+      const recordTimeMs = parseRecordTimeMs(record)
+      const timestampText = record?.order_timestamp || record?.gps_timestamp || record?.server_timestamp || ''
+
+      if (hasValidGpsPoint(record)) {
+        points.push({
+          source_index: index + 1,
+          latitude: Number(record.latitude),
+          longitude: Number(record.longitude),
+          order_timestamp: timestampText,
+          event_type: record?.event_type ?? null,
+          is_estimated: false,
+          point_description: 'Punto GPS original.',
+        })
+        return
+      }
+
+      const previous = findPreviousValidGpsRecord(records, index)
+      const next = findNextValidGpsRecord(records, index)
+      if (!previous || !next) {
+        return
+      }
+
+      const prevTimeMs = parseRecordTimeMs(previous.record)
+      const nextTimeMs = parseRecordTimeMs(next.record)
+      if (!Number.isFinite(recordTimeMs) || !Number.isFinite(prevTimeMs) || !Number.isFinite(nextTimeMs)) {
+        return
+      }
+      if (nextTimeMs <= prevTimeMs) {
+        return
+      }
+
+      const ratioRaw = (recordTimeMs - prevTimeMs) / (nextTimeMs - prevTimeMs)
+      const ratio = Math.min(1, Math.max(0, ratioRaw))
+
+      const prevLat = Number(previous.record.latitude)
+      const prevLon = Number(previous.record.longitude)
+      const nextLat = Number(next.record.latitude)
+      const nextLon = Number(next.record.longitude)
+      if (![prevLat, prevLon, nextLat, nextLon].every(Number.isFinite)) {
+        return
+      }
+
+      const estimatedLat = prevLat + ((nextLat - prevLat) * ratio)
+      const estimatedLon = prevLon + ((nextLon - prevLon) * ratio)
+
+      points.push({
+        source_index: index + 1,
+        latitude: estimatedLat,
+        longitude: estimatedLon,
+        order_timestamp: timestampText,
+        event_type: record?.event_type ?? null,
+        is_estimated: true,
+        interpolation_ratio: ratio,
+        previous_source_index: previous.index + 1,
+        next_source_index: next.index + 1,
+        previous_timestamp: previous.record?.order_timestamp || previous.record?.gps_timestamp || previous.record?.server_timestamp || '',
+        next_timestamp: next.record?.order_timestamp || next.record?.gps_timestamp || next.record?.server_timestamp || '',
+        point_description:
+          `Punto calculado por interpolación temporal (pérdida de GPS). ` +
+          `Se estimó usando fecha/hora entre el punto previo #${previous.index + 1} y el siguiente #${next.index + 1}.`,
+      })
+    })
+
+    return points
+  }
+
+  const buildEstimatedGpsMetadataBySourceIndex = (route) => {
+    const metadata = {}
+    const gpsPoints = buildGpsPointsForRouteMap(route)
+
+    gpsPoints.forEach((point) => {
+      const sourceIndex = Number(point?.source_index)
+      if (!Number.isInteger(sourceIndex) || sourceIndex <= 0) {
+        return
+      }
+
+      metadata[sourceIndex] = {
+        isEstimated: Boolean(point?.is_estimated),
+        pointDescription: String(point?.point_description || ''),
+      }
+    })
+
+    return metadata
   }
 
   const formatGapDuration = (totalSeconds) => {
@@ -998,6 +1192,8 @@ function App() {
 
     const safePointsJson = JSON.stringify(orderedPoints).replaceAll('</', String.raw`<\/`)
     const title = `Ruta assetId=${routeDetection.asset_id} clientId=${routeDetection.client_id}`
+    const startRouteEventType = Number(routeDetection.event_start ?? 519)
+    const endRouteEventType = Number(routeDetection.event_end ?? 520)
 
     const htmlContent = `
       <!doctype html>
@@ -1028,7 +1224,7 @@ function App() {
           </style>
         </head>
         <body>
-          <div class="header">${title} · puntos: ${orderedPoints.length} · criterio: primer 519 → primer evento de fin</div>
+          <div class="header">${title} · puntos: ${orderedPoints.length} · criterio: primer ${startRouteEventType} → primer ${endRouteEventType}</div>
           <div id="map"></div>
 
           <script
@@ -1041,15 +1237,11 @@ function App() {
             const map = L.map('map');
             const routeColors = ['#2563eb', '#dc2626', '#16a34a', '#7c3aed', '#ea580c', '#0891b2'];
             const candidateStartColors = ['#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#22c55e'];
-            const endRouteEventTypes = [520, 321, 334, 518, 541, 549, 726];
+            const startRouteEventType = ${startRouteEventType};
+            const endRouteEventType = ${endRouteEventType};
+            const endRouteEventTypes = [endRouteEventType];
             const endRouteLabels = {
-              520: 'IGNITION_OFF',
-              321: 'GEOFENCE_EXIT',
-              334: 'WORK_DAY_FINISHED',
-              518: 'IGNITION_OFF',
-              541: 'LOGISTICS_DESTINATION_REACHED',
-              549: 'TRIP_FINISHED',
-              726: 'PASSENGER_COUNT_RESET',
+              [endRouteEventType]: 'FIN',
             };
             const startIcon = L.divIcon({
               className: '',
@@ -1082,7 +1274,7 @@ function App() {
             let openStartIndex = null;
 
             points.forEach((point, index) => {
-              if (point.eventType === 519 && openStartIndex === null) {
+              if (point.eventType === startRouteEventType && openStartIndex === null) {
                 openStartIndex = index;
                 return;
               }
@@ -1102,7 +1294,7 @@ function App() {
 
             if (segments.length === 0) {
               L.marker([points[0].latitude, points[0].longitude]).addTo(map)
-                .bindPopup('No se detectaron segmentos completos 519→evento_fin con el criterio solicitado.');
+                .bindPopup('No se detectaron segmentos completos ${startRouteEventType}→${endRouteEventType} con el criterio solicitado.');
               map.setView([points[0].latitude, points[0].longitude], 12);
             } else {
               const allLatLngs = [];
@@ -1126,7 +1318,7 @@ function App() {
                 L.marker([startPoint.latitude, startPoint.longitude], { icon: startIcon })
                   .addTo(map)
                   .bindPopup(
-                    '<b>Inicio de ruta #' + (segmentIndex + 1) + ' (519)</b><br/>' +
+                    '<b>Inicio de ruta #' + (segmentIndex + 1) + ' (' + escapeHtml(startRouteEventType) + ')</b><br/>' +
                     'gpsTimestamp: ' + escapeHtml(startPoint.gpsTimestamp) + '<br/>' +
                     'eventType: ' + escapeHtml(startPoint.eventType) + '<br/>' +
                     'olc: ' + escapeHtml(startPoint.olc) + '<br/>' +
@@ -1149,7 +1341,7 @@ function App() {
                 segmentPoints.forEach((point, pointIndex) => {
                   const isStart = pointIndex === 0;
                   const isEnd = pointIndex === segmentPoints.length - 1;
-                  const isStartCandidate = point.eventType === 519;
+                  const isStartCandidate = point.eventType === startRouteEventType;
 
                   let fillColor = '#60a5fa';
                   let radius = 4;
@@ -1322,6 +1514,7 @@ function App() {
         <body>
           <div class="header">
             <span>${title} · puntos: ${intervalPoints.length} · carreteras esperadas: ${matchedRoadLabels.length}</span>
+            <span id="routing-status" style="font-size:11px;color:#6b7280;margin-left:8px;"></span>
             <div class="controls">
               <button id="toggle-route" type="button">Ocultar ruta</button>
               <button id="toggle-roads" type="button">Ocultar carreteras</button>
@@ -1376,11 +1569,70 @@ function App() {
               );
             });
 
-            const routeLine = L.polyline(latlngs, {
+            let routeLine = L.polyline(latlngs, {
               color: '#2563eb',
               weight: 4,
               opacity: 0.95,
             }).addTo(routeLayer);
+
+            const _RAD = Math.PI / 180;
+            function haversinKm(lat1, lon1, lat2, lon2) {
+              const dLat = (lat2 - lat1) * _RAD;
+              const dLon = (lon2 - lon1) * _RAD;
+              const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * _RAD) * Math.cos(lat2 * _RAD) * Math.sin(dLon / 2) ** 2;
+              return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            }
+
+            async function osrmSegment(lat1, lon1, lat2, lon2) {
+              const url = 'https://router.project-osrm.org/route/v1/driving/' +
+                lon1 + ',' + lat1 + ';' + lon2 + ',' + lat2 +
+                '?overview=full&geometries=geojson';
+              try {
+                const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+                if (!resp.ok) return null;
+                const data = await resp.json();
+                if (data.code !== 'Ok' || !data.routes?.[0]) return null;
+                return data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
+              } catch (e) {
+                return null;
+              }
+            }
+
+            async function routeLargeGaps() {
+              const GAP_KM = 20;
+              const gapSegments = [];
+              for (let i = 0; i < points.length - 1; i++) {
+                const dist = haversinKm(points[i].latitude, points[i].longitude, points[i + 1].latitude, points[i + 1].longitude);
+                if (dist > GAP_KM) gapSegments.push({ i, dist: dist.toFixed(1) });
+              }
+              if (gapSegments.length === 0) return;
+
+              const statusEl = document.getElementById('routing-status');
+              statusEl.textContent = 'Enrutando ' + gapSegments.length + ' tramo(s) via OSRM...';
+
+              const routedLatlngs = [[points[0].latitude, points[0].longitude]];
+              for (let i = 0; i < points.length - 1; i++) {
+                const p1 = points[i];
+                const p2 = points[i + 1];
+                const dist = haversinKm(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
+                if (dist > GAP_KM) {
+                  const routed = await osrmSegment(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
+                  if (routed && routed.length > 1) {
+                    routedLatlngs.push(...routed.slice(1));
+                  } else {
+                    routedLatlngs.push([p2.latitude, p2.longitude]);
+                  }
+                } else {
+                  routedLatlngs.push([p2.latitude, p2.longitude]);
+                }
+              }
+
+              routeLayer.removeLayer(routeLine);
+              routeLine = L.polyline(routedLatlngs, { color: '#2563eb', weight: 4, opacity: 0.95 }).addTo(routeLayer);
+              statusEl.textContent = '✓ OSRM: ' + gapSegments.length + ' tramo(s) enrutado(s) por carretera';
+            }
+
+            routeLargeGaps();
 
             const startIcon = L.divIcon({
               className: '',
@@ -1730,6 +1982,349 @@ function App() {
     popup.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
   }
 
+  const openSignalLossChartWindow = () => {
+    if (!signalLossData) return
+
+    const pts = (signalLossData.all_points || []).filter(
+      (p) => typeof p.diff_seconds === 'number' && Number.isFinite(p.diff_seconds) && p.diff_seconds >= 0
+    )
+
+    if (pts.length < 2) {
+      setError('No hay suficientes puntos con timestamp para graficar en una ventana aparte.')
+      return
+    }
+
+    const popup = window.open('', '_blank', 'width=1280,height=860')
+    if (!popup) {
+      setError('No se pudo abrir la ventana. Revisa el bloqueador de popups del navegador.')
+      return
+    }
+
+    const safePts = JSON.stringify(pts).replaceAll('</', String.raw`<\/`)
+    const safeSegments = JSON.stringify(signalLossData.segments || []).replaceAll('</', String.raw`<\/`)
+    const assetLabel = `assetId=${signalLossData.asset_id} clientId=${signalLossData.client_id}`
+    const title = `Señal GPS vs Servidor — ${assetLabel}`
+    const safeSummary = JSON.stringify({
+      total_records: signalLossData.total_records,
+      segments_count: signalLossData.signal_loss_segments_count,
+      total_minutes: signalLossData.total_signal_loss_minutes,
+    }).replaceAll('</', String.raw`<\/`)
+
+    const html = `
+      <!doctype html>
+      <html lang="es">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>${title}</title>
+          <style>
+            :root { color-scheme: light; }
+            body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #f8fafc; color: #0f172a; }
+            .container { max-width: 1240px; margin: 0 auto; padding: 16px; }
+            .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+            h1 { margin: 0 0 10px; font-size: 18px; }
+            h2 { margin: 0 0 10px; font-size: 15px; }
+            .summary { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+            .pill { background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; }
+            .pill.warn { border-color: #f59e0b; background: #fffbeb; color: #92400e; }
+            .pill.ok { border-color: #22c55e; background: #f0fdf4; color: #166534; }
+            .subtitle { font-size: 12px; color: #64748b; margin: 0 0 10px; }
+            svg { display: block; width: 100%; }
+            table { width: 100%; border-collapse: collapse; font-size: 12px; }
+            th, td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; white-space: nowrap; }
+            th { background: #f8fafc; position: sticky; top: 0; z-index: 1; }
+            .table-wrap { max-height: 260px; overflow: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="card">
+              <h1>${title}</h1>
+              <div class="summary" id="summary"></div>
+            </div>
+            <div class="card">
+              <h2>Diferencia GPS → Servidor por registro</h2>
+              <p class="subtitle">Eje Y: segundos entre GPSTimeStamp y ServerTimeStamp. Picos = transmisión en lote (sin señal previa).</p>
+              <svg id="chart" viewBox="0 0 1200 220" aria-label="Gráfico diferencia GPS vs Servidor"></svg>
+            </div>
+            <div class="card">
+              <h2>Segmentos sin señal detectados</h2>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>GPS inicio</th>
+                      <th>GPS fin</th>
+                      <th>Servidor recibió en</th>
+                      <th>Duración</th>
+                      <th>Registros</th>
+                    </tr>
+                  </thead>
+                  <tbody id="seg-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <script>
+            const pts = ${safePts};
+            const segments = ${safeSegments};
+            const summary = ${safeSummary};
+
+            const fmtTs = (v) => {
+              if (!v) return '—';
+              const d = new Date(v);
+              if (isNaN(d.getTime())) return String(v);
+              return d.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            };
+
+            // Summary pills
+            document.getElementById('summary').innerHTML = [
+              ['Registros analizados', String(summary.total_records), ''],
+              ['Segmentos sin señal', String(summary.segments_count), summary.segments_count > 0 ? 'warn' : 'ok'],
+              ['Tiempo total sin señal', summary.total_minutes.toFixed(1) + ' min', summary.total_minutes > 0 ? 'warn' : 'ok'],
+            ].map(([l, v, cls]) => '<div class="pill ' + cls + '"><strong>' + l + ':</strong> ' + v + '</div>').join('');
+
+            // Chart
+            const W = 1200, H = 220;
+            const PL = 58, PR = 16, PT = 12, PB = 30;
+            const iW = W - PL - PR, iH = H - PT - PB;
+            const maxDiff = Math.max(...pts.map((p) => p.diff_seconds), 60);
+            const xOf = (i) => PL + (i / Math.max(pts.length - 1, 1)) * iW;
+            const yOf = (v) => PT + iH - Math.min(v / maxDiff, 1) * iH;
+
+            const NS = 'http://www.w3.org/2000/svg';
+            const svg = document.getElementById('chart');
+
+            const mk = (tag, attrs) => {
+              const el = document.createElementNS(NS, tag);
+              Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+              return el;
+            };
+
+            // Signal loss background bands
+            segments.forEach((seg) => {
+              const lossIdx = pts.reduce((acc, p, i) => { if (p.is_signal_loss) acc.push(i); return acc; }, []);
+              if (lossIdx.length === 0) return;
+              const x0 = xOf(lossIdx[0]);
+              const x1 = xOf(lossIdx[lossIdx.length - 1]);
+              svg.appendChild(mk('rect', { x: x0, y: PT, width: Math.max(x1 - x0, 4), height: iH, fill: 'rgba(239,68,68,0.08)' }));
+            });
+
+            // Grid lines
+            [0, 25, 50, 75, 100].forEach((pct) => {
+              const yy = PT + iH - (pct / 100) * iH;
+              svg.appendChild(mk('line', { x1: PL, y1: yy, x2: W - PR, y2: yy, stroke: '#e2e8f0', 'stroke-width': 1 }));
+              const label = document.createElementNS(NS, 'text');
+              label.setAttribute('x', PL - 4);
+              label.setAttribute('y', yy + 3);
+              label.setAttribute('text-anchor', 'end');
+              label.setAttribute('fill', '#94a3b8');
+              label.setAttribute('font-size', '11');
+              label.textContent = Math.round(maxDiff * pct / 100) + 's';
+              svg.appendChild(label);
+            });
+
+            // Threshold line (30 s)
+            const thY = yOf(30);
+            svg.appendChild(mk('line', { x1: PL, y1: thY, x2: W - PR, y2: thY, stroke: '#f59e0b', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }));
+
+            // Axes
+            svg.appendChild(mk('line', { x1: PL, y1: PT, x2: PL, y2: PT + iH, stroke: '#475569', 'stroke-width': 1 }));
+            svg.appendChild(mk('line', { x1: PL, y1: PT + iH, x2: W - PR, y2: PT + iH, stroke: '#475569', 'stroke-width': 1 }));
+
+            // Polyline
+            const polyPts = pts.map((p, i) => xOf(i).toFixed(1) + ',' + yOf(p.diff_seconds).toFixed(1)).join(' ');
+            svg.appendChild(mk('polyline', { points: polyPts, fill: 'none', stroke: '#3b82f6', 'stroke-width': 1.5 }));
+
+            // Dots
+            const r = pts.length > 300 ? 1.5 : 3;
+            pts.forEach((p, i) => {
+              const c = mk('circle', { cx: xOf(i).toFixed(1), cy: yOf(p.diff_seconds).toFixed(1), r, fill: p.is_signal_loss ? '#ef4444' : '#3b82f6' });
+              c.innerHTML = '<title>Reg #' + (i+1) + ' | diff: ' + p.diff_seconds.toFixed(1) + 's | GPS: ' + fmtTs(p.gps_timestamp) + ' | Srv: ' + fmtTs(p.server_timestamp) + (p.is_signal_loss ? ' | SIN SEÑAL' : '') + '</title>';
+              svg.appendChild(c);
+            });
+
+            // Legend
+            const legY = H - 8;
+            [{cx: PL+10, fill:'#3b82f6', text:'Normal', tx: PL+18},
+             {cx: PL+80, fill:'#ef4444', text:'Sin señal', tx: PL+88}].forEach(({cx, fill, text, tx}) => {
+              svg.appendChild(mk('circle', { cx, cy: legY, r: 4, fill }));
+              const t = document.createElementNS(NS, 'text');
+              t.setAttribute('x', tx); t.setAttribute('y', legY + 4);
+              t.setAttribute('fill', '#64748b'); t.setAttribute('font-size', '11');
+              t.textContent = text;
+              svg.appendChild(t);
+            });
+            // threshold legend
+            svg.appendChild(mk('line', { x1: PL+150, y1: legY, x2: PL+168, y2: legY, stroke:'#f59e0b','stroke-width':1.5,'stroke-dasharray':'5 4'}));
+            const tl = document.createElementNS(NS, 'text');
+            tl.setAttribute('x', PL+172); tl.setAttribute('y', legY+4);
+            tl.setAttribute('fill', '#64748b'); tl.setAttribute('font-size', '11');
+            tl.textContent = 'Umbral 30 s'; svg.appendChild(tl);
+
+            // Segment table
+            document.getElementById('seg-rows').innerHTML = segments.length === 0
+              ? '<tr><td colspan="6">No se detectaron segmentos sin señal.</td></tr>'
+              : segments.map((s, i) =>
+                '<tr><td>' + (i+1) + '</td><td>' + fmtTs(s.gps_start) + '</td><td>' + fmtTs(s.gps_end) + '</td><td>' + fmtTs(s.server_received_at) + '</td><td><strong>' + s.duration_minutes.toFixed(1) + ' min</strong></td><td>' + s.num_records + '</td></tr>'
+              ).join('');
+          </script>
+        </body>
+      </html>
+    `
+
+    const blob = new Blob([html], { type: 'text/html' })
+    const blobUrl = URL.createObjectURL(blob)
+    popup.location.replace(blobUrl)
+    popup.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
+  }
+
+  const openStopsMapWindow = () => {
+    if (!stopsData?.stops?.length) return
+
+    const stops = stopsData.stops.filter((s) => s.latitude != null && s.longitude != null)
+    if (stops.length === 0) {
+      setError('No hay paradas con coordenadas para mostrar en el mapa.')
+      return
+    }
+
+    const popup = window.open('', '_blank', 'width=1280,height=860')
+    if (!popup) {
+      setError('No se pudo abrir la ventana. Revisa el bloqueador de popups del navegador.')
+      return
+    }
+
+    const safeStops = JSON.stringify(stops).replaceAll('</', String.raw`<\/`)
+    const title = `Paradas — assetId=${stopsData.asset_id} clientId=${stopsData.client_id}`
+
+    const html = `
+      <!doctype html>
+      <html lang="es">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>${title}</title>
+          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+          <style>
+            html, body { margin: 0; padding: 0; height: 100%; font-family: Inter, system-ui, sans-serif; background: #f8fafc; }
+            #map { width: 100%; height: calc(100% - 52px); }
+            .header {
+              height: 52px; display: flex; align-items: center; justify-content: space-between;
+              padding: 0 16px; border-bottom: 1px solid #e2e8f0; background: #fff; font-size: 13px; color: #0f172a;
+            }
+            .legend {
+              position: absolute; bottom: 24px; right: 10px; z-index: 1000;
+              background: #ffffffee; border: 1px solid #e2e8f0; border-radius: 8px;
+              padding: 10px 14px; font-size: 12px; line-height: 1.8;
+            }
+            .legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <strong>${title}</strong>
+            <span>${stops.length} paradas · ${stopsData.total_stop_minutes.toFixed(1)} min detenido</span>
+          </div>
+          <div id="map"></div>
+
+          <script
+            src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""
+          ></script>
+          <script>
+            const stops = ${safeStops};
+
+            const CAT_COLORS = {
+              gasolinera:               '#f59e0b',
+              hotel:                    '#8b5cf6',
+              restaurante:              '#22c55e',
+              tienda_conveniencia:      '#3b82f6',
+              motor_apagado:            '#64748b',
+              ralenti:                  '#94a3b8',
+              parada_no_autorizada:     '#ef4444',
+              estacionamiento_prolongado:'#f97316',
+              pernocta_fuera_de_base:   '#dc2626',
+              parada_en_geocerca:       '#0ea5e9',
+              punto_de_control:         '#10b981',
+              entrega:                  '#10b981',
+              parada_en_carretera:      '#94a3b8',
+            };
+
+            const fmtTs = (v) => {
+              if (!v) return '—';
+              const d = new Date(v);
+              return isNaN(d) ? v : d.toLocaleString('es-MX', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
+            };
+
+            const map = L.map('map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+              maxZoom: 19,
+            }).addTo(map);
+
+            const markers = [];
+            stops.forEach((s, i) => {
+              const color = CAT_COLORS[s.final_category] || '#94a3b8';
+              const radius = Math.max(8, Math.min(30, Math.sqrt(s.duration_minutes) * 1.5));
+
+              const marker = L.circleMarker([s.latitude, s.longitude], {
+                radius,
+                color: '#fff',
+                weight: 2,
+                fillColor: color,
+                fillOpacity: 0.85,
+              }).addTo(map);
+
+              const label = s.final_category.replace(/_/g, ' ');
+              const place = s.nearby_place ? '<br><b>Lugar:</b> ' + s.nearby_place : '';
+              const evCat = s.event_type_category ? '<br><b>Evento:</b> ' + s.event_type_category.replace(/_/g, ' ') : '';
+
+              marker.bindPopup(
+                '<b>Parada #' + (i + 1) + '</b><br>' +
+                '<b>Categoría:</b> <span style="color:' + color + ';font-weight:600">' + label + '</span><br>' +
+                '<b>Duración:</b> ' + s.duration_minutes.toFixed(1) + ' min<br>' +
+                '<b>Inicio:</b> ' + fmtTs(s.start_timestamp) + '<br>' +
+                '<b>Fin:</b> ' + fmtTs(s.end_timestamp) + '<br>' +
+                '<b>Registros:</b> ' + s.num_records +
+                evCat + place + '<br>' +
+                '<b>Confianza:</b> ' + s.confidence + '<br>' +
+                '<b>Coords:</b> ' + s.latitude.toFixed(5) + ', ' + s.longitude.toFixed(5),
+                { maxWidth: 280 }
+              );
+
+              marker.bindTooltip('#' + (i + 1) + ' · ' + s.duration_minutes.toFixed(0) + ' min · ' + label, { direction: 'top' });
+              markers.push(marker);
+            });
+
+            if (markers.length > 0) {
+              const group = L.featureGroup(markers);
+              map.fitBounds(group.getBounds().pad(0.15));
+            }
+
+            // Leyenda
+            const usedCats = [...new Set(stops.map((s) => s.final_category))];
+            const legDiv = L.DomUtil.create('div', 'legend');
+            legDiv.innerHTML = '<b>Categoría</b><br>' +
+              usedCats.map((cat) =>
+                '<span class="legend-dot" style="background:' + (CAT_COLORS[cat] || '#94a3b8') + '"></span>' +
+                cat.replace(/_/g, ' ')
+              ).join('<br>');
+            document.getElementById('map').appendChild(legDiv);
+          </script>
+        </body>
+      </html>
+    `
+
+    const blob = new Blob([html], { type: 'text/html' })
+    const blobUrl = URL.createObjectURL(blob)
+    popup.location.replace(blobUrl)
+    popup.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
+  }
+
   const buildMlClassRoadsIndex = () => {
     const index = {}
     const completeRoutes = Array.isArray(routeDetection?.complete_routes)
@@ -1747,9 +2342,7 @@ function App() {
         index[className] = {}
       }
 
-      const roads = Array.isArray(candidateRoute?.matched_roads)
-        ? candidateRoute.matched_roads.map((value) => String(value || '').trim()).filter(Boolean)
-        : []
+      const roads = getRouteRoadLabels(candidateRoute)
 
       roads.forEach((roadLabel) => {
         index[className][roadLabel] = (index[className][roadLabel] || 0) + 1
@@ -1775,10 +2368,69 @@ function App() {
     }
 
     const classRoadsIndex = buildMlClassRoadsIndex()
-    const predictedRoadLabels = (classRoadsIndex[predictedClass] || []).slice(0, 12)
+    const predictedRoutePoints = Array.isArray(route?.predicted_route_points)
+      ? route.predicted_route_points
+        .filter((point) => Array.isArray(point) && point.length >= 2)
+        .map((point) => [Number(point[0]), Number(point[1])])
+        .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]))
+      : []
+    const predictedRouteRoads = Array.isArray(route?.predicted_route_roads)
+      ? route.predicted_route_roads.map((value) => String(value || '').trim()).filter(Boolean)
+      : []
+    const routeRoadLabels = getRouteRoadLabels(route)
+    let selectedRoadLabelsSource = classRoadsIndex[predictedClass] || []
+    if (routeRoadLabels.length > 0) {
+      selectedRoadLabelsSource = routeRoadLabels
+    }
+    if (predictedRouteRoads.length > 0) {
+      selectedRoadLabelsSource = predictedRouteRoads
+    }
+    const predictedRoadLabels = selectedRoadLabelsSource
     if (predictedRoadLabels.length === 0) {
       setError(`No hay mapeo de carreteras disponible para ${predictedClass}.`)
       return
+    }
+
+    const gpsPointsForMap = buildGpsPointsForRouteMap(route)
+    const actualPoints = gpsPointsForMap.map((point) => [Number(point.latitude), Number(point.longitude)])
+    const estimatedPointsCount = gpsPointsForMap.filter((point) => point.is_estimated).length
+
+    const normalizeRoadLabel = (value) => String(value || '')
+      .normalize('NFD')
+      .replaceAll(/[\u0300-\u036f]/g, '')
+      .replaceAll(/\s+/g, ' ')
+      .trim()
+      .toUpperCase()
+
+    const haversineMeters = (lat1, lon1, lat2, lon2) => {
+      const radians = Math.PI / 180
+      const dLat = (lat2 - lat1) * radians
+      const dLon = (lon2 - lon1) * radians
+      const sinLat = Math.sin(dLat / 2)
+      const sinLon = Math.sin(dLon / 2)
+      const value = sinLat * sinLat + Math.cos(lat1 * radians) * Math.cos(lat2 * radians) * sinLon * sinLon
+      return 6371000 * (2 * Math.asin(Math.sqrt(value)))
+    }
+
+    const minDistanceToRouteMeters = (polyline, routePoints) => {
+      if (!Array.isArray(polyline) || polyline.length === 0 || !Array.isArray(routePoints) || routePoints.length === 0) {
+        return Number.POSITIVE_INFINITY
+      }
+
+      let minDistance = Number.POSITIVE_INFINITY
+      const vertexStride = Math.max(1, Math.floor(polyline.length / 120))
+
+      for (let vertexIndex = 0; vertexIndex < polyline.length; vertexIndex += vertexStride) {
+        const vertex = polyline[vertexIndex]
+        for (const routePoint of routePoints) {
+          const distance = haversineMeters(vertex[0], vertex[1], routePoint[0], routePoint[1])
+          if (distance < minDistance) {
+            minDistance = distance
+          }
+        }
+      }
+
+      return minDistance
     }
 
     let predictedRoadSegments = []
@@ -1791,29 +2443,63 @@ function App() {
 
       const data = await response.json()
       const rows = Array.isArray(data.rows) ? data.rows : []
-      const roadSet = new Set(predictedRoadLabels)
+      const roadSetNormalized = new Set(predictedRoadLabels.map((label) => normalizeRoadLabel(label)))
+      const corridorDistanceThresholdM = 5000
+      const corridorCandidates = []
 
-      predictedRoadSegments = rows
-        .filter((row) => {
-          const name = String(row.name || '').trim()
-          const routeName = String(row.p_route || '').trim()
-          return roadSet.has(name) || roadSet.has(routeName)
-        })
+      const preparedRows = rows
         .map((row, index) => {
           const latlngs = parseLinestringWkt(row.geometry)
           if (latlngs.length < 2) {
             return null
           }
 
+          const name = String(row.name || '').trim()
+          const routeName = String(row.p_route || '').trim()
+          const label = String(row.name || row.p_route || '').trim()
+          const rowLabelsNormalized = [name, routeName, label]
+            .map((value) => normalizeRoadLabel(value))
+            .filter(Boolean)
+
+          const isPredicted = rowLabelsNormalized.some((value) => roadSetNormalized.has(value))
+
+          let minDistanceToRoute = Number.POSITIVE_INFINITY
+          if (actualPoints.length > 0) {
+            minDistanceToRoute = minDistanceToRouteMeters(latlngs, actualPoints)
+          }
+
+          if (!isPredicted && Number.isFinite(minDistanceToRoute) && minDistanceToRoute <= corridorDistanceThresholdM) {
+            corridorCandidates.push({ label, distance: minDistanceToRoute })
+          }
+
           return {
             id: index + 1,
-            label: String(row.name || row.p_route || '').trim(),
-            route: String(row.p_route || '').trim(),
+            label,
+            route: routeName,
             no: String(row.p_no || '').trim(),
             latlngs,
+            isPredicted,
+            minDistanceToRoute,
           }
         })
         .filter(Boolean)
+
+      const sortedCorridorCandidates = corridorCandidates.toSorted(
+        (left, right) => left.distance - right.distance,
+      )
+
+      const selectedCorridorLabels = new Set(
+        sortedCorridorCandidates
+          .slice(0, 10)
+          .map((item) => normalizeRoadLabel(item.label))
+      )
+
+      predictedRoadSegments = preparedRows.filter((road) => {
+        if (road.isPredicted) {
+          return true
+        }
+        return selectedCorridorLabels.has(normalizeRoadLabel(road.label))
+      })
     } catch (err) {
       setError(err.message)
       return
@@ -1824,11 +2510,6 @@ function App() {
       return
     }
 
-    const intervalRecords = getRouteIntervalRecords(route)
-    const actualPoints = intervalRecords
-      .filter((record) => Number.isFinite(Number(record.latitude)) && Number.isFinite(Number(record.longitude)))
-      .map((record) => [Number(record.latitude), Number(record.longitude)])
-
     const mapWindow = window.open('', '_blank', 'width=1200,height=800')
     if (!mapWindow) {
       setError('No se pudo abrir la ventana del mapa. Revisa el bloqueador de popups del navegador.')
@@ -1836,7 +2517,8 @@ function App() {
     }
 
     const safeRoadsJson = JSON.stringify(predictedRoadSegments).replaceAll('</', String.raw`<\/`)
-    const safeActualPointsJson = JSON.stringify(actualPoints).replaceAll('</', String.raw`<\/`)
+    const safeActualPointsJson = JSON.stringify(gpsPointsForMap).replaceAll('</', String.raw`<\/`)
+    const safePredictedRoutePointsJson = JSON.stringify(predictedRoutePoints).replaceAll('</', String.raw`<\/`)
     const title = `Ruta ML #${routeIndex + 1} class=${predictedClass} assetId=${routeDetection?.asset_id || '-'} clientId=${routeDetection?.client_id || '-'}`
 
     const htmlContent = `
@@ -1854,21 +2536,85 @@ function App() {
           />
           <style>
             html, body { margin: 0; padding: 0; height: 100%; font-family: Inter, system-ui, sans-serif; }
-            #map { width: 100%; height: calc(100% - 56px); }
+            #map { width: 100%; height: calc(100% - 74px); }
             .header {
-              height: 56px;
+              min-height: 74px;
               display: flex;
-              align-items: center;
-              padding: 0 16px;
+              flex-direction: column;
+              align-items: flex-start;
+              justify-content: center;
+              gap: 6px;
+              padding: 8px 16px;
               border-bottom: 1px solid #e5e7eb;
               background: #f9fafb;
               font-size: 14px;
               color: #111827;
             }
+            .header-top {
+              width: 100%;
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 12px;
+              flex-wrap: wrap;
+            }
+            .legend {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 10px;
+              font-size: 12px;
+              color: #374151;
+            }
+            .controls {
+              display: flex;
+              gap: 8px;
+              flex-wrap: wrap;
+            }
+            .controls button {
+              border: 1px solid #d1d5db;
+              background: #ffffff;
+              color: #111827;
+              border-radius: 6px;
+              padding: 6px 10px;
+              font-size: 12px;
+              cursor: pointer;
+            }
+            .legend-item {
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+            }
+            .legend-swatch {
+              width: 18px;
+              height: 4px;
+              border-radius: 999px;
+              display: inline-block;
+            }
+            .legend-swatch-point {
+              width: 10px;
+              height: 10px;
+              border-radius: 999px;
+              display: inline-block;
+            }
           </style>
         </head>
         <body>
-          <div class="header">${title} · carreteras inferidas: ${predictedRoadSegments.length}</div>
+          <div class="header">
+            <div class="header-top">
+              <div>${title} · carreteras inferidas: ${predictedRoadSegments.length} · puntos GPS: ${actualPoints.length} · calculados: ${estimatedPointsCount}</div>
+              <div class="controls">
+                <button id="toggle-ml-routes" type="button">Ocultar ruta ML</button>
+                <button id="toggle-real-route" type="button">Ocultar ruta real</button>
+                <button id="toggle-gps-points" type="button">Ocultar puntos GPS</button>
+              </div>
+            </div>
+            <div class="legend">
+              <span class="legend-item"><span class="legend-swatch" style="background:#f97316"></span>Ruta ML inferida</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#1d4ed8"></span>Ruta real (línea)</span>
+              <span class="legend-item"><span class="legend-swatch-point" style="background:#06b6d4"></span>Puntos GPS</span>
+              <span class="legend-item"><span class="legend-swatch-point" style="background:#f59e0b"></span>Puntos GPS calculados</span>
+            </div>
+          </div>
           <div id="map"></div>
 
           <script
@@ -1878,40 +2624,221 @@ function App() {
           ></script>
           <script>
             const roads = ${safeRoadsJson};
-            const actualPoints = ${safeActualPointsJson};
+            const gpsPoints = ${safeActualPointsJson};
+            const actualPoints = Array.isArray(gpsPoints)
+              ? gpsPoints
+                  .map((point) => [Number(point.latitude), Number(point.longitude)])
+                  .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]))
+              : [];
+            const predictedRoutePoints = ${safePredictedRoutePointsJson};
             const map = L.map('map');
+            const mlRoutesLayer = L.layerGroup().addTo(map);
+            const realRouteLayer = L.layerGroup().addTo(map);
+            const gpsPointsLayer = L.layerGroup().addTo(map);
 
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
               maxZoom: 19,
               attribution: '&copy; OpenStreetMap contributors',
             }).addTo(map);
 
+            const ROAD_SEGMENT_BUFFER_M = 1200;
+            const ROAD_VERTEX_NEAR_GPS_MAX_M = 1200;
+
+            const pointDistanceM = (a, b) => {
+              const latA = Number(a?.[0]);
+              const lonA = Number(a?.[1]);
+              const latB = Number(b?.[0]);
+              const lonB = Number(b?.[1]);
+              if (![latA, lonA, latB, lonB].every(Number.isFinite)) {
+                return Number.POSITIVE_INFINITY;
+              }
+
+              const radians = Math.PI / 180;
+              const dLat = (latB - latA) * radians;
+              const dLon = (lonB - lonA) * radians;
+              const sinLat = Math.sin(dLat / 2);
+              const sinLon = Math.sin(dLon / 2);
+              const value = sinLat * sinLat + Math.cos(latA * radians) * Math.cos(latB * radians) * sinLon * sinLon;
+              return 6371000 * (2 * Math.asin(Math.sqrt(value)));
+            };
+
+            const findNearestRoadVertexIndex = (gpsPoint, roadLatLngs) => {
+              let bestIndex = -1;
+              let bestDistance = Number.POSITIVE_INFINITY;
+
+              roadLatLngs.forEach((vertex, index) => {
+                const distance = pointDistanceM(gpsPoint, vertex);
+                if (distance < bestDistance) {
+                  bestDistance = distance;
+                  bestIndex = index;
+                }
+              });
+
+              return { index: bestIndex, distance: bestDistance };
+            };
+
+            const extractClosestRoadSegment = (roadLatLngs, gpsPoints, bufferM) => {
+              if (!Array.isArray(roadLatLngs) || roadLatLngs.length < 2) {
+                return [];
+              }
+              if (!Array.isArray(gpsPoints) || gpsPoints.length < 2) {
+                return roadLatLngs;
+              }
+
+              const nearestIndexes = gpsPoints
+                .map((gpsPoint) => findNearestRoadVertexIndex(gpsPoint, roadLatLngs))
+                .filter((item) => item.index >= 0 && Number.isFinite(item.distance) && item.distance <= ROAD_VERTEX_NEAR_GPS_MAX_M)
+                .map((item) => item.index)
+                .sort((left, right) => left - right);
+
+              if (nearestIndexes.length >= 2) {
+                const segmentStart = nearestIndexes[0];
+                const segmentEnd = nearestIndexes[nearestIndexes.length - 1];
+                const paddedStart = Math.max(0, segmentStart - 2);
+                const paddedEnd = Math.min(roadLatLngs.length - 1, segmentEnd + 2);
+                if (paddedEnd - paddedStart >= 1) {
+                  return roadLatLngs.slice(paddedStart, paddedEnd + 1);
+                }
+              }
+
+              // Fallback: use contiguous vertices that are still close to the GPS route.
+              const closeIndexes = [];
+              roadLatLngs.forEach((vertex, index) => {
+                const isCloseToAnyGps = gpsPoints.some((gpsPoint) => pointDistanceM(vertex, gpsPoint) <= bufferM);
+                if (isCloseToAnyGps) {
+                  closeIndexes.push(index);
+                }
+              });
+
+              if (closeIndexes.length === 0) {
+                return [];
+              }
+
+              let bestStart = closeIndexes[0];
+              let bestEnd = closeIndexes[0];
+              let currentStart = closeIndexes[0];
+              let currentEnd = closeIndexes[0];
+
+              for (let i = 1; i < closeIndexes.length; i += 1) {
+                const currentIndex = closeIndexes[i];
+                if (currentIndex - currentEnd <= 2) {
+                  currentEnd = currentIndex;
+                  continue;
+                }
+
+                if (currentEnd - currentStart > bestEnd - bestStart) {
+                  bestStart = currentStart;
+                  bestEnd = currentEnd;
+                }
+
+                currentStart = currentIndex;
+                currentEnd = currentIndex;
+              }
+
+              if (currentEnd - currentStart > bestEnd - bestStart) {
+                bestStart = currentStart;
+                bestEnd = currentEnd;
+              }
+
+              const paddedStart = Math.max(0, bestStart - 1);
+              const paddedEnd = Math.min(roadLatLngs.length - 1, bestEnd + 1);
+              return roadLatLngs.slice(paddedStart, paddedEnd + 1);
+            };
+
             const allPoints = [];
+            if (Array.isArray(predictedRoutePoints) && predictedRoutePoints.length >= 2) {
+              const predictedLine = L.polyline(predictedRoutePoints, {
+                color: '#f97316',
+                weight: 5,
+                opacity: 0.95,
+              }).addTo(mlRoutesLayer);
+              allPoints.push(...predictedRoutePoints);
+              predictedLine.bindPopup('<b>Ruta ML (inicio→fin por red de carreteras)</b>');
+            }
+
             roads.forEach((road) => {
-              const line = L.polyline(road.latlngs, {
-                color: '#7c3aed',
+              const segmentLatLngs = extractClosestRoadSegment(road.latlngs, actualPoints, ROAD_SEGMENT_BUFFER_M);
+              if (!Array.isArray(segmentLatLngs) || segmentLatLngs.length < 2) {
+                return;
+              }
+
+              const line = L.polyline(segmentLatLngs, {
+                color: '#f97316',
                 weight: 4,
                 opacity: 0.9,
-              }).addTo(map);
-              allPoints.push(...road.latlngs);
+              }).addTo(mlRoutesLayer);
+              allPoints.push(...segmentLatLngs);
 
               line.bindPopup(
                 '<b>Ruta ML</b><br/>' +
                 'Carretera: ' + String(road.label || 'N/A') + '<br/>' +
                 'Ruta: ' + String(road.route || 'N/A') + '<br/>' +
-                'No: ' + String(road.no || 'N/A')
+                'No: ' + String(road.no || 'N/A') + '<br/>' +
+                'Render: segmento cercano a GPS'
               );
             });
 
             if (Array.isArray(actualPoints) && actualPoints.length >= 2) {
               const actualLine = L.polyline(actualPoints, {
-                color: '#2563eb',
+                color: '#1d4ed8',
                 weight: 3,
-                opacity: 0.8,
-                dashArray: '6,4',
-              }).addTo(map);
+                opacity: 0.95,
+                dashArray: '7,5',
+              }).addTo(realRouteLayer);
               allPoints.push(...actualPoints);
               actualLine.bindPopup('<b>Ruta real (referencia)</b>');
+            }
+
+            if (Array.isArray(gpsPoints) && gpsPoints.length > 0) {
+              gpsPoints.forEach((point, index) => {
+                const latitude = Number(point?.latitude);
+                const longitude = Number(point?.longitude);
+                if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+                  return;
+                }
+
+                const isEstimated = Boolean(point?.is_estimated);
+
+                const marker = L.circleMarker([latitude, longitude], {
+                  radius: isEstimated ? 4 : 3,
+                  color: isEstimated ? '#92400e' : '#0f766e',
+                  weight: 1,
+                  fillColor: isEstimated ? '#f59e0b' : '#06b6d4',
+                  fillOpacity: 0.9,
+                }).addTo(gpsPointsLayer);
+
+                marker.bindPopup(
+                  '<b>' + (isEstimated ? 'Punto GPS calculado' : 'Punto GPS') + '</b><br/>' +
+                  'Índice visual: ' + String(index + 1) + '<br/>' +
+                  'Índice del registro: ' + String(point?.source_index ?? '') + '<br/>' +
+                  'Timestamp: ' + String(point?.order_timestamp || '') + '<br/>' +
+                  'eventType: ' + String(point?.event_type ?? '') + '<br/>' +
+                  String(point?.point_description || '')
+                );
+              });
+
+              const startPoint = actualPoints[0];
+              const endPoint = actualPoints[actualPoints.length - 1];
+
+              if (Array.isArray(startPoint) && startPoint.length >= 2) {
+                L.circleMarker(startPoint, {
+                  radius: 6,
+                  color: '#14532d',
+                  weight: 2,
+                  fillColor: '#22c55e',
+                  fillOpacity: 0.95,
+                }).addTo(gpsPointsLayer).bindPopup('<b>Inicio de ruta real</b>');
+              }
+
+              if (Array.isArray(endPoint) && endPoint.length >= 2) {
+                L.circleMarker(endPoint, {
+                  radius: 6,
+                  color: '#7f1d1d',
+                  weight: 2,
+                  fillColor: '#ef4444',
+                  fillOpacity: 0.95,
+                }).addTo(gpsPointsLayer).bindPopup('<b>Fin de ruta real</b>');
+              }
             }
 
             if (allPoints.length > 0) {
@@ -1919,6 +2846,47 @@ function App() {
             } else {
               map.setView([23.6345, -102.5528], 5);
             }
+
+            const mlRoutesToggleButton = document.getElementById('toggle-ml-routes');
+            const realRouteToggleButton = document.getElementById('toggle-real-route');
+            const gpsPointsToggleButton = document.getElementById('toggle-gps-points');
+
+            let mlRoutesVisible = true;
+            let realRouteVisible = true;
+            let gpsPointsVisible = true;
+
+            mlRoutesToggleButton?.addEventListener('click', () => {
+              if (mlRoutesVisible) {
+                map.removeLayer(mlRoutesLayer);
+                mlRoutesToggleButton.textContent = 'Mostrar ruta ML';
+              } else {
+                map.addLayer(mlRoutesLayer);
+                mlRoutesToggleButton.textContent = 'Ocultar ruta ML';
+              }
+              mlRoutesVisible = !mlRoutesVisible;
+            });
+
+            realRouteToggleButton?.addEventListener('click', () => {
+              if (realRouteVisible) {
+                map.removeLayer(realRouteLayer);
+                realRouteToggleButton.textContent = 'Mostrar ruta real';
+              } else {
+                map.addLayer(realRouteLayer);
+                realRouteToggleButton.textContent = 'Ocultar ruta real';
+              }
+              realRouteVisible = !realRouteVisible;
+            });
+
+            gpsPointsToggleButton?.addEventListener('click', () => {
+              if (gpsPointsVisible) {
+                map.removeLayer(gpsPointsLayer);
+                gpsPointsToggleButton.textContent = 'Mostrar puntos GPS';
+              } else {
+                map.addLayer(gpsPointsLayer);
+                gpsPointsToggleButton.textContent = 'Ocultar puntos GPS';
+              }
+              gpsPointsVisible = !gpsPointsVisible;
+            });
           </script>
         </body>
       </html>
@@ -2166,7 +3134,7 @@ function App() {
         <h2>2) Datos actuales (POS + EventType)</h2>
         <p className="subtitle source-chip">{sourceLabel}</p>
         <div className="toolbar">
-          <button onClick={() => loadRows(0, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter)} disabled={rowsLoading}>
+          <button onClick={() => loadRows(0, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter, eventTypeFilter2)} disabled={rowsLoading}>
             {rowsLoading ? 'Cargando...' : 'Cargar datos'}
           </button>
           <label className="inline-label">
@@ -2190,13 +3158,23 @@ function App() {
             />
           </label>
           <label className="inline-label">
-            <span>eventType</span>
+            <span>eventType 1</span>
             <input
               type="number"
               value={eventTypeFilter}
               onChange={(event) => setEventTypeFilter(event.target.value)}
               onKeyDown={(event) => event.key === 'Enter' && handleApplyFilters()}
               placeholder="Ej. 519"
+            />
+          </label>
+          <label className="inline-label">
+            <span>eventType 2</span>
+            <input
+              type="number"
+              value={eventTypeFilter2}
+              onChange={(event) => setEventTypeFilter2(event.target.value)}
+              onKeyDown={(event) => event.key === 'Enter' && handleApplyFilters()}
+              placeholder="Ej. 520"
             />
           </label>
           <button onClick={handleApplyFilters} disabled={rowsLoading}>
@@ -2332,6 +3310,7 @@ function App() {
               <table>
                 <thead>
                   <tr>
+                    <th>Principal</th>
                     <th>Inicio</th>
                     <th>Fin</th>
                     <th>Duración (h)</th>
@@ -2350,11 +3329,13 @@ function App() {
                   {routeDetection.complete_routes.map((route) => {
                     const mlPrediction = mlPredictionsByRoute[getRouteKey(route)]
                     const routeGapAnalysis = buildRouteGapAnalysis(getRouteIntervalRecords(route))
+                    const routeRoadLabels = getRouteRoadLabels(route)
                     const mlConfidenceLabel = Number.isFinite(Number(mlPrediction?.confidence))
                       ? `${(Number(mlPrediction.confidence) * 100).toFixed(1)}%`
                       : ''
                     return (
                     <tr key={`route-${route.start_index}-${route.end_index}-${route.start_timestamp || 'na'}`}>
+                      <td>{route.is_primary ? 'SI' : ''}</td>
                       <td>{route.start_timestamp || ''}</td>
                       <td>{route.end_timestamp || ''}</td>
                       <td>{route.duration_hours == null ? '' : route.duration_hours.toFixed(2)}</td>
@@ -2368,7 +3349,7 @@ function App() {
                           ? '0.0%'
                           : `${(Number(route.road_match_ratio) * 100).toFixed(1)}%`}
                       </td>
-                      <td>{Array.isArray(route.matched_roads) ? route.matched_roads.join(' | ') : ''}</td>
+                      <td>{routeRoadLabels.join(' | ')}</td>
                       <td>{mlPrediction?.predicted_route || (mlPrediction?.error ? 'N/A' : '')}</td>
                       <td>{mlConfidenceLabel || (mlPrediction?.error ? 'N/A' : '')}</td>
                     </tr>
@@ -2376,7 +3357,7 @@ function App() {
                   })}
                   {routeDetection.complete_routes.length === 0 && (
                     <tr>
-                      <td colSpan={12}>No se detectaron rutas completas 519→520 para este asset/client.</td>
+                      <td colSpan={13}>No se detectaron rutas completas 519→520 para este asset/client.</td>
                     </tr>
                   )}
                 </tbody>
@@ -2389,6 +3370,8 @@ function App() {
                 <span>Filtro rápido</span>
                 <select value={routePointsFilterMode} onChange={(event) => setRoutePointsFilterMode(event.target.value)}>
                   <option value="all">Todos</option>
+                  <option value="estimated">Solo estimados</option>
+                  <option value="original">Solo originales</option>
                   <option value="boundaries">Solo INICIO/FIN</option>
                   <option value="eventType">Por eventType</option>
                 </select>
@@ -2412,9 +3395,11 @@ function App() {
               >
                 {(() => {
                   const intervalRecords = getRouteIntervalRecords(route)
-                  const visibleIntervalRecords = filterIntervalRecords(route, intervalRecords)
+                  const estimatedGpsMetadataBySourceIndex = buildEstimatedGpsMetadataBySourceIndex(route)
+                  const visibleIntervalRecords = filterIntervalRecords(route, intervalRecords, estimatedGpsMetadataBySourceIndex)
                   const mlPrediction = mlPredictionsByRoute[getRouteKey(route)]
                   const mlClassRoadsIndex = buildMlClassRoadsIndex()
+                  const routeRoadLabels = getRouteRoadLabels(route)
                   const mlPredictedRoads = mlPrediction?.predicted_route
                     ? (mlClassRoadsIndex[mlPrediction.predicted_route] || [])
                     : []
@@ -2423,13 +3408,13 @@ function App() {
                   return (
                     <>
                       <p className="subtitle">
-                        Ruta #{routeIndex + 1} · Inicio: {formatTimestamp(route.start_timestamp)} · Fin: {formatTimestamp(route.end_timestamp)} ·
+                        Ruta #{routeIndex + 1}{route.is_primary ? ' · PRINCIPAL (mejor match de carreteras)' : ''} · Inicio: {formatTimestamp(route.start_timestamp)} · Fin: {formatTimestamp(route.end_timestamp)} ·
                         Registros entre eventos inicio/fin: {intervalRecords.length} ·
                         Mostrando: {visibleIntervalRecords.length}
                       </p>
                       <p className="subtitle">
-                        Carreteras involucradas: {Array.isArray(route.matched_roads) && route.matched_roads.length > 0
-                          ? route.matched_roads.join(' | ')
+                        Carreteras involucradas: {routeRoadLabels.length > 0
+                          ? routeRoadLabels.join(' | ')
                           : 'sin match de carretera'}
                       </p>
                       <p className="subtitle">
@@ -2467,15 +3452,22 @@ function App() {
                               <th>Description</th>
                               <th>Carretera</th>
                               <th>Dist. a carretera (m)</th>
+                              <th>GPS estimado</th>
+                              <th>Detalle estimacion</th>
                               <th>Lat</th>
                               <th>Lon</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {visibleIntervalRecords.map((record, recordIndex) => renderIntervalRecordRow(route, record, recordIndex))}
+                            {visibleIntervalRecords.map((record, recordIndex) => renderIntervalRecordRow(
+                              route,
+                              record,
+                              recordIndex,
+                              estimatedGpsMetadataBySourceIndex,
+                            ))}
                             {visibleIntervalRecords.length === 0 && (
                               <tr>
-                                <td colSpan={12}>No hay registros para el filtro seleccionado en esta ruta.</td>
+                                <td colSpan={14}>No hay registros para el filtro seleccionado en esta ruta.</td>
                               </tr>
                             )}
                           </tbody>
@@ -2600,6 +3592,372 @@ function App() {
               </table>
             </div>
           </>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>4) Detección de desplazamientos sin señal (GPS vs Server timestamp)</h2>
+        <p className="subtitle">
+          Identifica periodos donde el dispositivo perdió conectividad y transmitió registros en lote.
+          Señal: varios registros con <strong>GPSTimeStamp distintos</strong> llegan con el{' '}
+          <strong>mismo ServerTimeStamp</strong> (o muy cercanos).
+        </p>
+
+        {signalLossLoading && <p className="subtitle">Analizando timestamps...</p>}
+
+        {!signalLossLoading && signalLossData && (
+          <>
+            <p className="subtitle">
+              Registros analizados:{' '}
+              <strong>{signalLossData.total_records.toLocaleString()}</strong>
+              {' · '}
+              Segmentos sin señal:{' '}
+              <strong className={signalLossData.signal_loss_segments_count > 0 ? 'warning' : 'success'}>
+                {signalLossData.signal_loss_segments_count}
+              </strong>
+              {' · '}
+              Tiempo total sin señal:{' '}
+              <strong className={signalLossData.total_signal_loss_minutes > 0 ? 'warning' : 'success'}>
+                {signalLossData.total_signal_loss_minutes.toFixed(1)} min
+              </strong>
+            </p>
+
+            {signalLossData.error && (
+              <p className="subtitle warning">{signalLossData.error}</p>
+            )}
+
+            {signalLossData.signal_loss_segments_count === 0 && (
+              <p className="subtitle success">
+                No se detectaron periodos sin señal para este asset/client.
+              </p>
+            )}
+
+            {signalLossData.segments.length > 0 && (
+              <>
+                <h3>Segmentos sin señal detectados</h3>
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>GPS inicio (dispositivo)</th>
+                        <th>GPS fin (dispositivo)</th>
+                        <th>Servidor recibió en</th>
+                        <th>Duración sin señal</th>
+                        <th>Registros acumulados</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {signalLossData.segments.map((seg, i) => (
+                        <tr key={i}>
+                          <td>{i + 1}</td>
+                          <td>{seg.gps_start || '—'}</td>
+                          <td>{seg.gps_end || '—'}</td>
+                          <td>{seg.server_received_at || '—'}</td>
+                          <td>
+                            <strong className="warning">
+                              {seg.duration_minutes.toFixed(1)} min
+                            </strong>
+                          </td>
+                          <td>{seg.num_records}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {signalLossAnomalies?.anomalies?.length > 0 && (
+                  <>
+                    <h3>Clasificación de anomalías por segmento</h3>
+                    <p className="subtitle">
+                      Velocidad implícita = distancia entre último punto antes del gap y primer punto después ÷ duración.
+                      Umbral: {signalLossAnomalies.max_speed_kmh_threshold} km/h.
+                    </p>
+                    <div className="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>#</th>
+                            <th>Categoría</th>
+                            <th>Duración</th>
+                            <th>Distancia GPS</th>
+                            <th>Vel. implícita</th>
+                            <th>Punto anterior</th>
+                            <th>Punto posterior</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {signalLossAnomalies.anomalies.map((a, i) => {
+                            const categoryLabel = {
+                              salto_sospechoso: '⚠ Salto sospechoso',
+                              apagado_en_reposo: '⚠ Apagado en reposo',
+                              sin_cobertura: 'Sin cobertura',
+                            }[a.category] ?? a.category
+                            const isAlert = a.category !== 'sin_cobertura'
+                            const fmtCoord = (p) =>
+                              p?.latitude != null
+                                ? `${p.latitude.toFixed(4)}, ${p.longitude.toFixed(4)}`
+                                : '—'
+                            return (
+                              <tr key={i}>
+                                <td>{i + 1}</td>
+                                <td>
+                                  <strong className={isAlert ? 'warning' : 'success'}>
+                                    {categoryLabel}
+                                  </strong>
+                                </td>
+                                <td>{a.duration_minutes.toFixed(1)} min</td>
+                                <td>{a.distance_km != null ? `${a.distance_km.toFixed(2)} km` : '—'}</td>
+                                <td className={isAlert ? 'warning' : ''}>
+                                  {a.implied_speed_kmh != null ? `${a.implied_speed_kmh.toFixed(1)} km/h` : '—'}
+                                </td>
+                                <td style={{ fontSize: 11 }}>{fmtCoord(a.point_before)}</td>
+                                <td style={{ fontSize: 11 }}>{fmtCoord(a.point_after)}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  Gráfico temporal: diferencia GPS → Servidor
+                  <button style={{ fontSize: 12, padding: '3px 10px' }} onClick={openSignalLossChartWindow}>
+                    Ver en ventana aparte ↗
+                  </button>
+                </h3>
+                <p className="subtitle">
+                  Eje Y: segundos entre GPSTimeStamp y ServerTimeStamp del mismo registro.
+                  En condiciones normales la diferencia es de pocos segundos.
+                  Picos indican transmisión en lote (sin señal previa).
+                </p>
+                {(() => {
+                  const pts = signalLossData.all_points.filter(
+                    (p) => typeof p.diff_seconds === 'number' && Number.isFinite(p.diff_seconds) && p.diff_seconds >= 0
+                  )
+                  if (pts.length < 2) return <p className="subtitle">Insuficientes puntos para graficar.</p>
+
+                  const W = 720
+                  const H = 140
+                  const PL = 52, PR = 12, PT = 10, PB = 24
+                  const iW = W - PL - PR
+                  const iH = H - PT - PB
+                  const maxDiff = Math.max(...pts.map((p) => p.diff_seconds), 60)
+                  const xOf = (i) => PL + (i / (pts.length - 1)) * iW
+                  const yOf = (v) => PT + iH - Math.min(v / maxDiff, 1) * iH
+                  const thresholdY = yOf(30)
+
+                  const polyline = pts.map((p, i) => `${xOf(i).toFixed(1)},${yOf(p.diff_seconds).toFixed(1)}`).join(' ')
+
+                  const yLabels = [0, Math.round(maxDiff / 2), Math.round(maxDiff)]
+
+                  return (
+                    <svg
+                      viewBox={`0 0 ${W} ${H}`}
+                      style={{ width: '100%', maxWidth: W, display: 'block', overflow: 'visible', fontFamily: 'monospace', fontSize: 10 }}
+                      aria-label="Grafico de diferencia GPS vs Servidor"
+                    >
+                      {/* Área de fondo para segmentos sin señal */}
+                      {signalLossData.segments.map((seg, si) => {
+                        const segPts = pts.filter((p) => p.is_signal_loss)
+                        if (segPts.length === 0) return null
+                        const firstIdx = pts.findIndex((p) => p.gps_timestamp === seg.gps_start || p.is_signal_loss)
+                        const lastIdx = pts.findLastIndex((p) => p.gps_timestamp === seg.gps_end || p.is_signal_loss)
+                        if (firstIdx < 0 || lastIdx < 0) return null
+                        return (
+                          <rect
+                            key={si}
+                            x={xOf(firstIdx)}
+                            y={PT}
+                            width={xOf(lastIdx) - xOf(firstIdx)}
+                            height={iH}
+                            fill="rgba(239,68,68,0.08)"
+                          />
+                        )
+                      })}
+
+                      {/* Línea de umbral normal (30 s) */}
+                      <line x1={PL} y1={thresholdY} x2={W - PR} y2={thresholdY} stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 3" />
+                      <text x={PL - 2} y={thresholdY + 3} textAnchor="end" fill="#f59e0b">30s</text>
+
+                      {/* Eje Y etiquetas */}
+                      {yLabels.map((v) => (
+                        <g key={v}>
+                          <line x1={PL - 4} y1={yOf(v)} x2={PL} y2={yOf(v)} stroke="#888" strokeWidth={1} />
+                          <text x={PL - 6} y={yOf(v) + 3} textAnchor="end" fill="#888">{v}s</text>
+                        </g>
+                      ))}
+
+                      {/* Eje X e Y base */}
+                      <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#555" strokeWidth={1} />
+                      <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="#555" strokeWidth={1} />
+
+                      {/* Línea de datos */}
+                      <polyline points={polyline} fill="none" stroke="#3b82f6" strokeWidth={1.5} />
+
+                      {/* Puntos coloreados */}
+                      {pts.map((p, i) => (
+                        <circle
+                          key={i}
+                          cx={xOf(i)}
+                          cy={yOf(p.diff_seconds)}
+                          r={pts.length > 200 ? 1.5 : 3}
+                          fill={p.is_signal_loss ? '#ef4444' : '#3b82f6'}
+                        />
+                      ))}
+
+                      {/* Leyenda */}
+                      <circle cx={PL + 10} cy={H - 8} r={4} fill="#3b82f6" />
+                      <text x={PL + 18} y={H - 5} fill="#888">Normal</text>
+                      <circle cx={PL + 75} cy={H - 8} r={4} fill="#ef4444" />
+                      <text x={PL + 83} y={H - 5} fill="#888">Sin señal</text>
+                      <line x1={PL + 145} y1={H - 8} x2={PL + 160} y2={H - 8} stroke="#f59e0b" strokeDasharray="4 3" strokeWidth={1.5} />
+                      <text x={PL + 164} y={H - 5} fill="#888">Umbral 30 s</text>
+                    </svg>
+                  )
+                })()}
+              </>
+            )}
+          </>
+        )}
+
+        {!signalLossLoading && !signalLossData && routeDetection && (
+          <p className="subtitle">No se pudo obtener el análisis de señal.</p>
+        )}
+
+        {!signalLossLoading && !signalLossData && !routeDetection && (
+          <p className="subtitle">Ingresa assetId y clientId en la sección de rutas para analizar la señal.</p>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>5) Detección y clasificación de paradas</h2>
+        <p className="subtitle">
+          Parada detectada cuando el vehículo permanece con desplazamiento {'<'} 50 m durante ≥ 5 min.
+          Clasificación: A) EventType Motum · B) POI cercano (OpenStreetMap).
+        </p>
+
+        {stopsLoading && <p className="subtitle">Detectando paradas...</p>}
+
+        {!stopsLoading && stopsData && (
+          <>
+            <p className="subtitle">
+              Registros analizados: <strong>{stopsData.total_records.toLocaleString()}</strong>
+              {' · '}
+              Paradas detectadas:{' '}
+              <strong className={stopsData.total_stops > 0 ? 'warning' : 'success'}>
+                {stopsData.total_stops}
+              </strong>
+              {' · '}
+              Tiempo total detenido:{' '}
+              <strong>{stopsData.total_stop_minutes.toFixed(1)} min</strong>
+              {' · '}
+              <span className="subtitle">
+                Geo OSM: {stopsData.use_geo ? 'activo' : 'desactivado'}
+                {!stopsData.use_geo && (
+                  <button
+                    style={{ marginLeft: 8, fontSize: 11, padding: '2px 8px' }}
+                    onClick={() => {
+                      const query = new URLSearchParams({
+                        asset_id: routeAssetId.trim(),
+                        client_id: routeClientId.trim(),
+                        use_geo: 'true',
+                      })
+                      setStopsLoading(true)
+                      fetch(`${API_BASE}/routes/stops?${query.toString()}`)
+                        .then((r) => r.json())
+                        .then((d) => setStopsData(d))
+                        .finally(() => setStopsLoading(false))
+                    }}
+                  >
+                    Activar clasificación OSM ↗
+                  </button>
+                )}
+              </span>
+            </p>
+
+            {stopsData.total_stops > 0 && (
+              <button onClick={openStopsMapWindow} style={{ marginBottom: 10 }}>
+                Ver mapa de paradas ↗
+              </button>
+            )}
+
+            {stopsData.total_stops === 0 && (
+              <p className="subtitle success">No se detectaron paradas significativas para este asset/client.</p>
+            )}
+
+            {stopsData.stops.length > 0 && (
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Inicio</th>
+                      <th>Fin</th>
+                      <th>Duración</th>
+                      <th>Registros</th>
+                      <th>Categoría final</th>
+                      <th>Evento Motum</th>
+                      <th>Lugar OSM</th>
+                      <th>Confianza</th>
+                      <th>Coordenadas</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stopsData.stops.map((s) => {
+                      const catColors = {
+                        gasolinera: '#f59e0b',
+                        hotel: '#8b5cf6',
+                        restaurante: '#22c55e',
+                        tienda_conveniencia: '#3b82f6',
+                        motor_apagado: '#64748b',
+                        ralenti: '#94a3b8',
+                        parada_no_autorizada: '#ef4444',
+                        estacionamiento_prolongado: '#f97316',
+                        pernocta_fuera_de_base: '#dc2626',
+                        parada_en_geocerca: '#0ea5e9',
+                        punto_de_control: '#10b981',
+                        entrega: '#10b981',
+                        parada_en_carretera: '#94a3b8',
+                      }
+                      const color = catColors[s.final_category] ?? '#94a3b8'
+                      return (
+                        <tr key={s.stop_index}>
+                          <td>{s.stop_index + 1}</td>
+                          <td style={{ fontSize: 11 }}>{s.start_timestamp ? new Date(s.start_timestamp).toLocaleString('es-MX') : '—'}</td>
+                          <td style={{ fontSize: 11 }}>{s.end_timestamp ? new Date(s.end_timestamp).toLocaleString('es-MX') : '—'}</td>
+                          <td><strong>{s.duration_minutes.toFixed(1)} min</strong></td>
+                          <td>{s.num_records}</td>
+                          <td>
+                            <span style={{ background: color + '22', color, border: `1px solid ${color}`, borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600 }}>
+                              {s.final_category.replace(/_/g, ' ')}
+                            </span>
+                          </td>
+                          <td style={{ fontSize: 11 }}>{s.event_type_category?.replace(/_/g, ' ') ?? '—'}</td>
+                          <td style={{ fontSize: 11 }}>{s.nearby_place ?? '—'}</td>
+                          <td style={{ fontSize: 11, color: s.confidence === 'alta' ? '#22c55e' : s.confidence === 'media' ? '#f59e0b' : '#94a3b8' }}>
+                            {s.confidence}
+                          </td>
+                          <td style={{ fontSize: 11 }}>
+                            {s.latitude != null ? `${s.latitude.toFixed(4)}, ${s.longitude.toFixed(4)}` : '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {!stopsLoading && !stopsData && routeDetection && (
+          <p className="subtitle">No se pudo obtener el análisis de paradas.</p>
+        )}
+        {!stopsLoading && !stopsData && !routeDetection && (
+          <p className="subtitle">Ingresa assetId y clientId en la sección de rutas para analizar las paradas.</p>
         )}
       </section>
 

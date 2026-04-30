@@ -299,6 +299,7 @@ def query_merged_rows(
     asset_id: int | None = None,
     client_id: int | None = None,
     event_type: int | None = None,
+    event_type_2: int | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, object]:
     where_parts: list[str] = []
@@ -310,9 +311,19 @@ def query_merged_rows(
     if client_id is not None:
         where_parts.append("try_cast(clientId AS BIGINT) = ?")
         where_params.append(client_id)
-    if event_type is not None:
+    event_types = sorted(
+        {
+            int(value)
+            for value in [event_type, event_type_2]
+            if value is not None
+        }
+    )
+    if len(event_types) == 1:
         where_parts.append("try_cast(eventType AS BIGINT) = ?")
-        where_params.append(event_type)
+        where_params.append(event_types[0])
+    elif len(event_types) >= 2:
+        where_parts.append("try_cast(eventType AS BIGINT) IN (?, ?)")
+        where_params.extend(event_types[:2])
 
     where_sql = ""
     if where_parts:
