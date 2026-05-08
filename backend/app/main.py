@@ -415,19 +415,23 @@ def twin_asset_state(asset_id: int, client_id: int | None = None, recent_events:
         500: {"description": "Unexpected route detection error"},
     },
 )
-def detect_routes(asset_id: int, client_id: int) -> RouteDetectionResponse:
-    cache_key = (asset_id, client_id)
+def detect_routes(
+    asset_id: int,
+    client_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> RouteDetectionResponse:
+    cache_key = (asset_id, client_id, date_from, date_to)
     cached = _ROUTE_DETECT_CACHE.get(cache_key)
     if cached is not None:
         stored_at, result = cached
         if time.monotonic() - stored_at < _ROUTE_CACHE_TTL_SECONDS:
             logger.info("Cache HIT for asset_id=%d client_id=%d", asset_id, client_id)
             return RouteDetectionResponse(**result)
-        # expired — remove stale entry
         del _ROUTE_DETECT_CACHE[cache_key]
 
     try:
-        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
         result = detect_routes_by_asset_client(asset_id=asset_id, client_id=client_id, merged=merged_subset)
     except SnapshotUnavailableError:
         result = detect_routes_by_asset_client(asset_id=asset_id, client_id=client_id)
@@ -456,9 +460,11 @@ def stops(
     client_id: int,
     min_stop_minutes: float = 5.0,
     use_geo: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> StopsResponse:
     try:
-        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
     except SnapshotUnavailableError:
         try:
             merged = load_and_merge_pos_eventtype()
@@ -503,9 +509,11 @@ def signal_loss_anomalies(
     asset_id: int,
     client_id: int,
     max_speed_kmh: float = 120.0,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> SignalLossAnomaliesResponse:
     try:
-        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
     except SnapshotUnavailableError:
         try:
             merged = load_and_merge_pos_eventtype()
@@ -545,9 +553,14 @@ def signal_loss_anomalies(
         500: {"description": "Error inesperado en detección de pérdida de señal"},
     },
 )
-def signal_loss(asset_id: int, client_id: int) -> SignalLossResponse:
+def signal_loss(
+    asset_id: int,
+    client_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> SignalLossResponse:
     try:
-        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id)
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
     except SnapshotUnavailableError:
         try:
             from app.eventtype_joiner import load_and_merge_pos_eventtype

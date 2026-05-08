@@ -43,6 +43,8 @@ function App() {
   const [mlPredictionsByRoute, setMlPredictionsByRoute] = useState({})
   const [mlPredictionsLoading, setMlPredictionsLoading] = useState(false)
   const [routeLoading, setRouteLoading] = useState(false)
+  const [routeDateFrom, setRouteDateFrom] = useState('')
+  const [routeDateTo, setRouteDateTo] = useState('')
   const [signalLossData, setSignalLossData] = useState(null)
   const [signalLossLoading, setSignalLossLoading] = useState(false)
   const [signalLossAnomalies, setSignalLossAnomalies] = useState(null)
@@ -146,9 +148,15 @@ function App() {
     }
   }
 
+  const buildRouteQuery = (assetValue, clientValue) => {
+    const query = new URLSearchParams({ asset_id: assetValue, client_id: clientValue })
+    if (routeDateFrom.trim()) query.set('date_from', routeDateFrom.trim())
+    if (routeDateTo.trim()) query.set('date_to', routeDateTo.trim())
+    return query
+  }
+
   const detectRoutesByValues = async (assetValue, clientValue, clearPrevious = true) => {
     setRouteLoading(true)
-    setSignalLossLoading(true)
     setError('')
     if (clearPrevious) {
       setRouteDetection(null)
@@ -159,25 +167,14 @@ function App() {
 
     if (!assetValue || !clientValue) {
       setRouteLoading(false)
-      setSignalLossLoading(false)
       setError('Debes indicar assetId y clientId para detectar rutas')
       return
     }
 
-    const query = new URLSearchParams({ asset_id: assetValue, client_id: clientValue })
+    const query = buildRouteQuery(assetValue, clientValue)
 
-    setStopsLoading(true)
-    const [routeResult, signalResult, anomalyResult, stopsResult] = await Promise.allSettled([
-      fetch(`${API_BASE}/routes/detect?${query.toString()}`),
-      fetch(`${API_BASE}/routes/signal-loss?${query.toString()}`),
-      fetch(`${API_BASE}/routes/signal-loss/anomalies?${query.toString()}`),
-      fetch(`${API_BASE}/routes/stops?${query.toString()}`),
-    ])
-
-    // --- rutas ---
     try {
-      if (routeResult.status === 'rejected') throw new Error(routeResult.reason?.message || 'Error de red')
-      const resp = routeResult.value
+      const resp = await fetch(`${API_BASE}/routes/detect?${query.toString()}`)
       if (!resp.ok) {
         const detail = await resp.json()
         throw new Error(detail.detail || 'No se pudieron detectar rutas')
@@ -191,29 +188,39 @@ function App() {
     } finally {
       setRouteLoading(false)
     }
+  }
 
-    // --- señal ---
+  const loadSignalLoss = async () => {
+    const assetValue = routeAssetId.trim()
+    const clientValue = routeClientId.trim()
+    if (!assetValue || !clientValue) return
+    setSignalLossLoading(true)
+    setSignalLossData(null)
+    setSignalLossAnomalies(null)
+    const query = buildRouteQuery(assetValue, clientValue)
     try {
-      if (signalResult.status === 'fulfilled' && signalResult.value.ok) {
-        const data = await signalResult.value.json()
-        setSignalLossData(data)
-      }
+      const [signalResp, anomalyResp] = await Promise.all([
+        fetch(`${API_BASE}/routes/signal-loss?${query.toString()}`),
+        fetch(`${API_BASE}/routes/signal-loss/anomalies?${query.toString()}`),
+      ])
+      if (signalResp.ok) setSignalLossData(await signalResp.json())
+      if (anomalyResp.ok) setSignalLossAnomalies(await anomalyResp.json())
     } finally {
       setSignalLossLoading(false)
     }
+  }
 
-    // --- anomalías de señal ---
-    if (anomalyResult.status === 'fulfilled' && anomalyResult.value.ok) {
-      const data = await anomalyResult.value.json()
-      setSignalLossAnomalies(data)
-    }
-
-    // --- paradas ---
+  const loadStops = async (useGeo = false) => {
+    const assetValue = routeAssetId.trim()
+    const clientValue = routeClientId.trim()
+    if (!assetValue || !clientValue) return
+    setStopsLoading(true)
+    setStopsData(null)
+    const query = buildRouteQuery(assetValue, clientValue)
+    query.set('use_geo', String(useGeo))
     try {
-      if (stopsResult.status === 'fulfilled' && stopsResult.value.ok) {
-        const data = await stopsResult.value.json()
-        setStopsData(data)
-      }
+      const resp = await fetch(`${API_BASE}/routes/stops?${query.toString()}`)
+      if (resp.ok) setStopsData(await resp.json())
     } finally {
       setStopsLoading(false)
     }
@@ -3284,6 +3291,22 @@ function App() {
               placeholder="Ej. 64"
             />
           </label>
+          <label className="inline-label">
+            <span>Desde</span>
+            <input
+              type="date"
+              value={routeDateFrom}
+              onChange={(event) => setRouteDateFrom(event.target.value)}
+            />
+          </label>
+          <label className="inline-label">
+            <span>Hasta</span>
+            <input
+              type="date"
+              value={routeDateTo}
+              onChange={(event) => setRouteDateTo(event.target.value)}
+            />
+          </label>
           <button onClick={detectRoutes} disabled={routeLoading}>
             {routeLoading ? 'Analizando...' : 'Detectar rutas'}
           </button>
@@ -3824,7 +3847,9 @@ function App() {
         )}
 
         {!signalLossLoading && !signalLossData && routeDetection && (
-          <p className="subtitle">No se pudo obtener el análisis de señal.</p>
+          <div className="toolbar">
+            <button onClick={() => loadSignalLoss()}>Cargar análisis de señal</button>
+          </div>
         )}
 
         {!signalLossLoading && !signalLossData && !routeDetection && (
@@ -3954,7 +3979,10 @@ function App() {
         )}
 
         {!stopsLoading && !stopsData && routeDetection && (
-          <p className="subtitle">No se pudo obtener el análisis de paradas.</p>
+          <div className="toolbar">
+            <button onClick={() => loadStops(false)}>Cargar paradas (rápido)</button>
+            <button onClick={() => loadStops(true)}>Cargar paradas + clasificar OSM</button>
+          </div>
         )}
         {!stopsLoading && !stopsData && !routeDetection && (
           <p className="subtitle">Ingresa assetId y clientId en la sección de rutas para analizar las paradas.</p>

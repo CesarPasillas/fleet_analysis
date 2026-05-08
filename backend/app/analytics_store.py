@@ -183,14 +183,22 @@ def build_snapshot(
             CREATE TABLE merged_pos_eventtype AS
             WITH pos_clean AS (
                 SELECT
-                    try_cast(eventType AS BIGINT) AS eventType,
-                    * EXCLUDE (eventType)
+                    try_cast(eventType  AS BIGINT) AS eventType,
+                    try_cast(assetId   AS BIGINT) AS assetId,
+                    try_cast(clientId  AS BIGINT) AS clientId,
+                    * EXCLUDE (eventType, assetId, clientId)
                 FROM pos_raw
             )
-            SELECT p.*, c.*
+            SELECT p.*, c.* EXCLUDE (eventType)
             FROM pos_clean p
             LEFT JOIN eventtype_catalog c USING (eventType)
             """
+        )
+        connection.execute(
+            "CREATE INDEX idx_merged_asset_client ON merged_pos_eventtype (assetId, clientId)"
+        )
+        connection.execute(
+            "CREATE INDEX idx_merged_event_type ON merged_pos_eventtype (eventType)"
         )
 
         carreteras_files = sorted(glob(source_carreteras_glob))
@@ -211,7 +219,7 @@ def build_snapshot(
         merged_rows = _read_table_count(connection, "merged_pos_eventtype")
         distinct_assets = int(
             connection.execute(
-                "SELECT COUNT(DISTINCT try_cast(assetId AS BIGINT)) FROM merged_pos_eventtype"
+                "SELECT COUNT(DISTINCT assetId) FROM merged_pos_eventtype"
             ).fetchone()[0]
             or 0
         )
@@ -250,7 +258,7 @@ def get_snapshot_status(db_path: str | Path | None = None) -> dict[str, int | st
             carreteras_rows = _read_table_count(connection, "carreteras_raw")
             distinct_assets = int(
                 connection.execute(
-                    "SELECT COUNT(DISTINCT try_cast(assetId AS BIGINT)) FROM merged_pos_eventtype"
+                    "SELECT COUNT(DISTINCT assetId) FROM merged_pos_eventtype"
                 ).fetchone()[0]
                 or 0
             )
@@ -306,10 +314,10 @@ def query_merged_rows(
     where_params: list[object] = []
 
     if asset_id is not None:
-        where_parts.append("try_cast(assetId AS BIGINT) = ?")
+        where_parts.append("assetId = ?")
         where_params.append(asset_id)
     if client_id is not None:
-        where_parts.append("try_cast(clientId AS BIGINT) = ?")
+        where_parts.append("clientId = ?")
         where_params.append(client_id)
     event_types = sorted(
         {
@@ -319,10 +327,10 @@ def query_merged_rows(
         }
     )
     if len(event_types) == 1:
-        where_parts.append("try_cast(eventType AS BIGINT) = ?")
+        where_parts.append("eventType = ?")
         where_params.append(event_types[0])
     elif len(event_types) >= 2:
-        where_parts.append("try_cast(eventType AS BIGINT) IN (?, ?)")
+        where_parts.append("eventType IN (?, ?)")
         where_params.extend(event_types[:2])
 
     where_sql = ""
@@ -350,9 +358,45 @@ def query_merged_rows(
     }
 
 
+def _filter_by_date(
+    df: pd.DataFrame,
+    date_from: str | None,
+    date_to: str | None,
+) -> pd.DataFrame:
+    ts_col = next(
+        (c for c in ["gpsTimestamp", "gps_timestamp", "GPSTimeStamp", "serverTimestamp"] if c in df.columns),
+        None,
+    )
+    if ts_col is None:
+        return df
+
+    ts = pd.to_numeric(df[ts_col], errors="coerce")
+    med = float(ts.abs().median())
+    if med >= 1e17:
+        ts_ms = ts / 1_000_000
+    elif med >= 1e14:
+        ts_ms = ts / 1_000
+    elif med >= 1e11:
+        ts_ms = ts
+    else:
+        ts_ms = ts * 1_000
+
+    mask = pd.Series(True, index=df.index)
+    if date_from:
+        from_ms = pd.Timestamp(date_from, tz="UTC").value / 1_000_000
+        mask &= ts_ms >= from_ms
+    if date_to:
+        to_ms = (pd.Timestamp(date_to, tz="UTC") + pd.Timedelta(days=1)).value / 1_000_000
+        mask &= ts_ms < to_ms
+
+    return df[mask].reset_index(drop=True)
+
+
 def get_asset_client_rows(
     asset_id: int,
     client_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
     db_path: str | Path | None = None,
 ) -> pd.DataFrame:
     with _open_snapshot_read_only(db_path=db_path) as connection:
@@ -360,11 +404,14 @@ def get_asset_client_rows(
             """
             SELECT *
             FROM merged_pos_eventtype
-            WHERE try_cast(assetId AS BIGINT) = ?
-              AND try_cast(clientId AS BIGINT) = ?
+            WHERE assetId = ?
+              AND clientId = ?
             """,
             [asset_id, client_id],
         ).fetchdf()
+
+    if not dataframe.empty and (date_from or date_to):
+        dataframe = _filter_by_date(dataframe, date_from, date_to)
 
     if dataframe.empty:
         raise ValueError(f"No hay registros para assetId={asset_id}, clientId={client_id}")
