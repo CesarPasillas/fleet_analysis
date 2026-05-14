@@ -13,7 +13,8 @@ _MAX_STEP_M: float = 50.0
 _MIN_RECORDS: int = 3
 _GEO_RADIUS_M: int = 300
 _MAX_GEO_CALLS: int = 100
-_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
+_OVERPASS_URL_FALLBACK = "https://overpass-api.de/api/interpreter"
 _OVERPASS_TIMEOUT = 8
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 _NOMINATIM_TIMEOUT = 6
@@ -33,21 +34,48 @@ _EVENT_CATEGORIES: dict[str, str] = {
 }
 
 _OSM_TAGS: list[tuple[str, str, str]] = [
-    ("amenity", "fuel",         "gasolinera"),
-    ("shop",    "fuel",         "gasolinera"),
-    ("amenity", "restaurant",   "restaurante"),
-    ("amenity", "fast_food",    "restaurante"),
-    ("amenity", "cafe",         "restaurante"),
-    ("amenity", "food_court",   "restaurante"),
-    ("tourism", "hotel",        "hotel"),
-    ("tourism", "motel",        "hotel"),
-    ("tourism", "hostel",       "hotel"),
-    ("shop",    "convenience",  "tienda_conveniencia"),
-    ("shop",    "supermarket",  "tienda_conveniencia"),
+    # Combustible
+    ("amenity", "fuel",             "gasolinera"),
+    ("shop",    "fuel",             "gasolinera"),
+    # Alimentos
+    ("amenity", "restaurant",       "restaurante"),
+    ("amenity", "fast_food",        "restaurante"),
+    ("amenity", "cafe",             "restaurante"),
+    ("amenity", "food_court",       "restaurante"),
+    # Hospedaje
+    ("tourism", "hotel",            "hotel"),
+    ("tourism", "motel",            "hotel"),
+    ("tourism", "hostel",           "hotel"),
+    # Comercio
+    ("shop",    "convenience",      "tienda_conveniencia"),
+    ("shop",    "supermarket",      "tienda_conveniencia"),
+    ("shop",    "wholesale",        "tienda_conveniencia"),
+    # Salud
+    ("amenity", "pharmacy",         "farmacia"),
+    ("amenity", "hospital",         "hospital"),
+    ("amenity", "clinic",           "hospital"),
+    # Taller y servicios vehiculares
+    ("shop",    "car_repair",       "taller_mecanico"),
+    ("shop",    "tyres",            "taller_mecanico"),
+    ("amenity", "car_wash",         "taller_mecanico"),
+    # Logística / carga
+    ("landuse", "industrial",       "terminal_carga"),
+    ("building","warehouse",        "terminal_carga"),
+    ("amenity", "weighbridge",      "terminal_carga"),
 ]
 
+# Duración mínima (segundos) para heurísticas temporales cuando OSM no halla POI
+_HEURISTIC_PERNOCTA_S: float = 4 * 3600    # ≥4 h
+_HEURISTIC_PARADA_LARGA_S: float = 2 * 3600  # ≥2 h
+
 _geo_cache: dict[tuple[float, float, int], tuple[str | None, str | None]] = {}
-_nominatim_cache: dict[tuple[float, float], str | None] = {}
+# Maps (lat, lon) → (category_or_None, place_name_or_None)
+_nominatim_cache: dict[tuple[float, float], tuple[str | None, str | None]] = {}
+
+_HIGHWAY_TYPES = {
+    "motorway", "trunk", "primary", "secondary", "tertiary",
+    "motorway_link", "trunk_link", "primary_link",
+}
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -184,39 +212,47 @@ def _classify_event(keys: list[str]) -> str | None:
     return None
 
 
+def _build_overpass_query(lat: float, lon: float) -> str:
+    area = f"(around:{_GEO_RADIUS_M},{lat},{lon})"
+    # Use exact-match filters (faster than regex ~) with nwr (node/way/relation)
+    tag_filters = [
+        '["amenity"="fuel"]', '["shop"="fuel"]',
+        '["amenity"="restaurant"]', '["amenity"="fast_food"]',
+        '["amenity"="cafe"]', '["amenity"="food_court"]',
+        '["tourism"="hotel"]', '["tourism"="motel"]', '["tourism"="hostel"]',
+        '["shop"="convenience"]', '["shop"="supermarket"]', '["shop"="wholesale"]',
+        '["amenity"="pharmacy"]',
+        '["amenity"="hospital"]', '["amenity"="clinic"]',
+        '["shop"="car_repair"]', '["shop"="tyres"]', '["amenity"="car_wash"]',
+        '["building"="warehouse"]', '["landuse"="industrial"]', '["amenity"="weighbridge"]',
+    ]
+    parts = "\n".join(f"  nwr{f}{area};" for f in tag_filters)
+    return f"[out:json][timeout:{_OVERPASS_TIMEOUT}];\n(\n{parts}\n);\nout center tags;"
+
+
+_OVERPASS_HEADERS = {"User-Agent": "fleet-analysis-phd/1.0 (research)"}
+
+
 def _classify_geo(lat: float, lon: float) -> tuple[str | None, str | None]:
     cache_key = (round(lat, 4), round(lon, 4), _GEO_RADIUS_M)
     if cache_key in _geo_cache:
         return _geo_cache[cache_key]
 
-    query = (
-        f"[out:json][timeout:{_OVERPASS_TIMEOUT}];\n"
-        f"(\n"
-        f'  node["amenity"~"fuel|restaurant|fast_food|cafe|food_court"]'
-        f"(around:{_GEO_RADIUS_M},{lat},{lon});\n"
-        f'  node["tourism"~"hotel|motel|hostel"]'
-        f"(around:{_GEO_RADIUS_M},{lat},{lon});\n"
-        f'  node["shop"~"convenience|supermarket|fuel"]'
-        f"(around:{_GEO_RADIUS_M},{lat},{lon});\n"
-        f'  way["amenity"~"fuel|restaurant|fast_food|cafe"]'
-        f"(around:{_GEO_RADIUS_M},{lat},{lon});\n"
-        f'  way["tourism"~"hotel|motel|hostel"]'
-        f"(around:{_GEO_RADIUS_M},{lat},{lon});\n"
-        f'  way["shop"~"convenience|supermarket|fuel"]'
-        f"(around:{_GEO_RADIUS_M},{lat},{lon});\n"
-        f");\n"
-        f"out center tags;"
-    )
+    query = _build_overpass_query(lat, lon)
 
-    try:
-        resp = requests.post(
-            _OVERPASS_URL,
-            data={"data": query},
-            timeout=_OVERPASS_TIMEOUT + 2,
-        )
-        resp.raise_for_status()
-        elements = resp.json().get("elements", [])
-    except Exception:
+    elements = None
+    for url in (_OVERPASS_URL, _OVERPASS_URL_FALLBACK):
+        try:
+            resp = requests.post(
+                url, data={"data": query}, headers=_OVERPASS_HEADERS,
+                timeout=_OVERPASS_TIMEOUT + 4,
+            )
+            resp.raise_for_status()
+            elements = resp.json().get("elements", [])
+            break
+        except Exception:
+            continue
+    if elements is None:
         _geo_cache[cache_key] = (None, None)
         return None, None
 
@@ -232,7 +268,12 @@ def _classify_geo(lat: float, lon: float) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _reverse_geocode(lat: float, lon: float) -> str | None:
+def _classify_via_nominatim(lat: float, lon: float) -> tuple[str | None, str | None]:
+    """Return (category, place_name) using Nominatim reverse-geocoding.
+
+    category = 'en_carretera' when the nearest OSM feature is a major road;
+    None otherwise (street address returned as place_name).
+    """
     cache_key = (round(lat, 3), round(lon, 3))
     if cache_key in _nominatim_cache:
         return _nominatim_cache[cache_key]
@@ -247,17 +288,26 @@ def _reverse_geocode(lat: float, lon: float) -> str | None:
         resp.raise_for_status()
         data = resp.json()
     except Exception:
-        _nominatim_cache[cache_key] = None
-        return None
+        _nominatim_cache[cache_key] = (None, None)
+        return None, None
 
     addr = data.get("address", {})
-    parts = [
-        addr.get("road") or addr.get("highway"),
-        addr.get("suburb") or addr.get("village") or addr.get("town") or addr.get("city"),
-        addr.get("state"),
-    ]
-    label = ", ".join(p for p in parts if p)
-    result = label or data.get("display_name", "").split(",")[0] or None
+    osm_class = data.get("class", "")
+    osm_type = data.get("type", "")
+
+    road = addr.get("road") or addr.get("highway")
+    city = addr.get("suburb") or addr.get("village") or addr.get("town") or addr.get("city")
+    state = addr.get("state")
+
+    # Detect when the nearest OSM object IS a highway/major road
+    is_highway = osm_class == "highway" and osm_type in _HIGHWAY_TYPES
+    if is_highway and road:
+        result: tuple[str | None, str | None] = ("en_carretera", road)
+    else:
+        parts = [road, city, state]
+        label = ", ".join(p for p in parts if p) or data.get("display_name", "").split(",")[0] or None
+        result = (None, label)
+
     _nominatim_cache[cache_key] = result
     return result
 
@@ -279,17 +329,53 @@ def _query_geo_for_stop(
 
     nearby_address = None
     if geo_cat is None:
-        nearby_address = _reverse_geocode(stop["latitude"], stop["longitude"])
+        # _classify_via_nominatim returns ("en_carretera", road_name) on highways,
+        # or (None, address_string) for regular locations
+        nom_cat, nom_place = _classify_via_nominatim(stop["latitude"], stop["longitude"])
         time.sleep(0.25)
+        if nom_cat == "en_carretera":
+            geo_cat = "en_carretera"
+            geo_place = nom_place
+        else:
+            nearby_address = nom_place
 
     return geo_cat, geo_place, nearby_address, geo_calls
 
 
-def _resolve_category(geo_cat: str | None, event_cat: str | None) -> tuple[str, str]:
+def _duration_heuristic(duration_s: float, start_ts: str | None) -> str | None:
+    """Infer category from stop duration and start hour when OSM finds no POI."""
+    hour = None
+    if start_ts:
+        try:
+            hour = pd.Timestamp(start_ts).hour
+        except Exception:
+            pass
+
+    if duration_s >= _HEURISTIC_PERNOCTA_S:
+        # Long stop at night → overnight rest outside base
+        if hour is not None and (hour >= 20 or hour < 7):
+            return "pernocta_fuera_de_base"
+        return "parada_larga"
+
+    if duration_s >= _HEURISTIC_PARADA_LARGA_S:
+        return "parada_larga"
+
+    return None
+
+
+def _resolve_category(
+    geo_cat: str | None,
+    event_cat: str | None,
+    duration_s: float = 0.0,
+    start_ts: str | None = None,
+) -> tuple[str, str]:
     if geo_cat:
         return geo_cat, "alta"
     if event_cat:
         return event_cat, "media"
+    heuristic = _duration_heuristic(duration_s, start_ts)
+    if heuristic:
+        return heuristic, "media"
     return "parada_en_carretera", "baja"
 
 
@@ -312,7 +398,11 @@ def detect_and_classify_stops(
         geo_cat, geo_place, nearby_address, geo_calls = _query_geo_for_stop(
             stop, use_geo, geo_calls, max_geo_calls
         )
-        final_cat, confidence = _resolve_category(geo_cat, event_cat)
+        final_cat, confidence = _resolve_category(
+            geo_cat, event_cat,
+            duration_s=stop["duration_seconds"],
+            start_ts=stop["start_timestamp"],
+        )
 
         stop["event_type_category"] = event_cat
         stop["geo_category"] = geo_cat
@@ -320,10 +410,23 @@ def detect_and_classify_stops(
         stop["final_category"] = final_cat
         stop["confidence"] = confidence
 
+    # Aggregate category summary
+    cat_summary: dict[str, dict[str, Any]] = {}
+    for s in stops:
+        cat = s["final_category"]
+        if cat not in cat_summary:
+            cat_summary[cat] = {"category": cat, "count": 0, "total_minutes": 0.0}
+        cat_summary[cat]["count"] += 1
+        cat_summary[cat]["total_minutes"] += s["duration_minutes"]
+    for v in cat_summary.values():
+        v["total_minutes"] = round(v["total_minutes"], 2)
+    category_summary = sorted(cat_summary.values(), key=lambda x: -x["count"])
+
     return {
         "total_records": len(df),
         "total_stops": len(stops),
         "total_stop_minutes": round(sum(s["duration_minutes"] for s in stops), 2),
+        "category_summary": category_summary,
         "stops": stops,
         "error": None,
     }

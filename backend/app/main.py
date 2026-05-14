@@ -29,6 +29,8 @@ from app.eventtype_reader import get_eventtype_csv_path
 from app.ml.model import RouteMLService
 from app.pos_reader import get_pos_directory, list_pos_csv_files
 from app.route_detection import detect_routes_by_asset_client
+from app.route_cache import get_cached_routes, store_cached_routes, clear_route_cache, coverage_cache_info
+from app.route_summary import get_fleet_summary, get_client_summary, get_fleet_heatmap, get_client_assets, get_signal_loss_coverage
 from app.schemas import (
     BackendFilesResponse,
     CarreterasRowsResponse,
@@ -348,6 +350,10 @@ def data_snapshot_build(payload: SnapshotBuildRequest) -> SnapshotBuildResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Snapshot build failed: {exc}") from exc
 
+    # Invalidate all route caches — underlying data changed
+    _ROUTE_DETECT_CACHE.clear()
+    clear_route_cache()
+
     return SnapshotBuildResponse(**summary)
 
 
@@ -422,14 +428,24 @@ def detect_routes(
     date_to: str | None = None,
 ) -> RouteDetectionResponse:
     cache_key = (asset_id, client_id, date_from, date_to)
+
+    # 1. In-memory cache (fastest, 5-min TTL)
     cached = _ROUTE_DETECT_CACHE.get(cache_key)
     if cached is not None:
         stored_at, result = cached
         if time.monotonic() - stored_at < _ROUTE_CACHE_TTL_SECONDS:
-            logger.info("Cache HIT for asset_id=%d client_id=%d", asset_id, client_id)
+            logger.info("Memory cache HIT asset_id=%d client_id=%d", asset_id, client_id)
             return RouteDetectionResponse(**result)
         del _ROUTE_DETECT_CACHE[cache_key]
 
+    # 2. Persistent disk cache (survives restarts, invalidated on new snapshot)
+    result = get_cached_routes(asset_id, client_id, date_from, date_to)
+    if result is not None:
+        logger.info("Disk cache HIT asset_id=%d client_id=%d", asset_id, client_id)
+        _ROUTE_DETECT_CACHE[cache_key] = (time.monotonic(), result)
+        return RouteDetectionResponse(**result)
+
+    # 3. Full calculation
     try:
         merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
         result = detect_routes_by_asset_client(asset_id=asset_id, client_id=client_id, merged=merged_subset)
@@ -445,6 +461,7 @@ def detect_routes(
         raise HTTPException(status_code=500, detail=f"Route detection failed: {exc}") from exc
 
     _ROUTE_DETECT_CACHE[cache_key] = (time.monotonic(), result)
+    store_cached_routes(asset_id, client_id, date_from, date_to, result)
     return RouteDetectionResponse(**result)
 
 
@@ -587,19 +604,79 @@ def signal_loss(
     return SignalLossResponse(asset_id=asset_id, client_id=client_id, **result)
 
 
+@app.get("/routes/fleet-summary")
+def fleet_summary(
+    limit: int = 20,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """Top rutas de toda la flota agregadas desde el CSV de entrenamiento."""
+    return get_fleet_summary(limit=limit, date_from=date_from, date_to=date_to)
+
+
+@app.get("/routes/client-assets")
+def client_assets(client_id: int, limit: int = 200) -> dict:
+    """Lista de assets con viajes para un clientId, ordenados por frecuencia."""
+    assets, total = get_client_assets(client_id, limit=limit)
+    return {"client_id": client_id, "assets": assets, "total_shown": len(assets), "total_assets": total}
+
+
+@app.get("/routes/client-summary")
+def client_summary(client_id: int, limit: int = 20, asset_ids: str | None = None) -> dict:
+    """Top rutas para un clientId específico, con filtro opcional por asset_ids (CSV separado por comas)."""
+    parsed_assets = [int(x) for x in asset_ids.split(",") if x.strip().isdigit()] if asset_ids else None
+    return get_client_summary(client_id=client_id, limit=limit, asset_ids=parsed_assets)
+
+
+@app.get("/routes/fleet-heatmap")
+def fleet_heatmap(limit_routes: int = 12, limit_clients: int = 10) -> dict:
+    """Matriz cliente × ruta con frecuencia de viajes para heatmap."""
+    return get_fleet_heatmap(limit_routes=limit_routes, limit_clients=limit_clients)
+
+
+@app.get("/routes/signal-loss/coverage-summary/cache-status")
+def coverage_cache_status(client_id: int) -> dict:
+    """Devuelve metadatos del caché sin ejecutar el análisis."""
+    return coverage_cache_info(client_id)
+
+
+@app.get("/routes/signal-loss/coverage-summary")
+def signal_loss_coverage_summary(
+    client_id: int,
+    limit_assets: int = 20,
+    grid_size_deg: float = 0.01,
+    force_refresh: bool = False,
+) -> dict:
+    """
+    Devuelve zonas sin cobertura GPS del cliente.
+    Si existe caché válido se devuelve instantáneamente; usa force_refresh=true para recalcular.
+    """
+    return get_signal_loss_coverage(
+        client_id=client_id,
+        limit_assets=limit_assets,
+        grid_size_deg=grid_size_deg,
+        force_refresh=force_refresh,
+    )
+
+
 @app.delete(
     "/routes/detect/cache",
     responses={200: {"description": "Cache cleared"}},
 )
 def clear_route_detect_cache(asset_id: int | None = None, client_id: int | None = None) -> dict:
-    """Invalidate cached route detection results.
+    """Invalidate cached route detection results (memory + disk).
 
-    If asset_id and client_id are both provided, only that entry is removed.
+    If asset_id and client_id are both provided, only that asset is removed.
     Otherwise the entire cache is cleared.
     """
     if asset_id is not None and client_id is not None:
-        removed = 1 if _ROUTE_DETECT_CACHE.pop((asset_id, client_id), None) is not None else 0
+        mem_removed = sum(
+            1 for k in list(_ROUTE_DETECT_CACHE)
+            if k[0] == asset_id and k[1] == client_id and _ROUTE_DETECT_CACHE.pop(k, None) is not None
+        )
+        disk_removed = clear_route_cache(asset_id, client_id)
     else:
-        removed = len(_ROUTE_DETECT_CACHE)
+        mem_removed = len(_ROUTE_DETECT_CACHE)
         _ROUTE_DETECT_CACHE.clear()
-    return {"cleared": removed}
+        disk_removed = clear_route_cache()
+    return {"memory_cleared": mem_removed, "disk_cleared": disk_removed}

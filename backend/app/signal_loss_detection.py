@@ -121,10 +121,55 @@ def _build_all_points(
                 "diff_seconds": round(float(row["_diff_s"]), 1),
                 "latitude": lat,
                 "longitude": lon,
+                "estimated_latitude": None,
+                "estimated_longitude": None,
                 "is_signal_loss": bool(row["_is_loss"]),
             }
         )
     return all_points
+
+
+def _interpolate_missing_positions(all_points: list[dict[str, Any]]) -> None:
+    """Add estimated_latitude/estimated_longitude for null-GPS points via temporal interpolation."""
+    # Build index of (position_in_list, gps_timestamp_seconds, lat, lon) for valid GPS points
+    valid: list[tuple[int, float, float, float]] = []
+    for i, p in enumerate(all_points):
+        if p.get("latitude") is None:
+            continue
+        ts = p.get("gps_timestamp")
+        if not ts:
+            continue
+        try:
+            t = pd.Timestamp(ts).timestamp()
+            valid.append((i, t, float(p["latitude"]), float(p["longitude"])))
+        except Exception:
+            pass
+
+    if len(valid) < 2:
+        return
+
+    for i, p in enumerate(all_points):
+        if p.get("latitude") is not None:
+            continue  # already has real GPS
+        ts = p.get("gps_timestamp")
+        if not ts:
+            continue
+        try:
+            t_cur = pd.Timestamp(ts).timestamp()
+        except Exception:
+            continue
+
+        # Find nearest surrounding valid GPS points by list index
+        prev = next((v for v in reversed(valid) if v[0] < i), None)
+        nxt = next((v for v in valid if v[0] > i), None)
+        if prev is None or nxt is None:
+            continue
+        if nxt[1] <= prev[1]:
+            continue
+
+        ratio = max(0.0, min(1.0, (t_cur - prev[1]) / (nxt[1] - prev[1])))
+        p["estimated_latitude"] = round(prev[2] + ratio * (nxt[2] - prev[2]), 6)
+        p["estimated_longitude"] = round(prev[3] + ratio * (nxt[3] - prev[3]), 6)
 
 
 def detect_signal_loss(
@@ -180,6 +225,7 @@ def detect_signal_loss(
 
     segments = _build_segments(batch_stats, loss_batch_ids, w, lat_col, lon_col)
     all_points = _build_all_points(w, lat_col, lon_col)
+    _interpolate_missing_positions(all_points)
 
     return {
         "total_records": len(w),

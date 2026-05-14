@@ -50,11 +50,216 @@ function App() {
   const [signalLossAnomalies, setSignalLossAnomalies] = useState(null)
   const [stopsData, setStopsData] = useState(null)
   const [stopsLoading, setStopsLoading] = useState(false)
+  const [selectedMapRouteIndex, setSelectedMapRouteIndex] = useState(null)
+  const [expandedRouteIndex, setExpandedRouteIndex] = useState(null)
   const [routePointsFilterMode, setRoutePointsFilterMode] = useState('all')
   const [routePointsEventTypeFilter, setRoutePointsEventTypeFilter] = useState('')
   const [manualMapMode, setManualMapMode] = useState('coords')
   const [manualMapInput, setManualMapInput] = useState('')
   const [error, setError] = useState('')
+
+  // --- Resumen ejecutivo de rutas ---
+  const [summaryTab, setSummaryTab] = useState('fleet')
+  const [fleetSummary, setFleetSummary] = useState(null)
+  const [fleetSummaryLoading, setFleetSummaryLoading] = useState(false)
+  const [clientSummary, setClientSummary] = useState(null)
+  const [clientSummaryLoading, setClientSummaryLoading] = useState(false)
+  const [summaryClientId, setSummaryClientId] = useState('')
+  const [heatmapData, setHeatmapData] = useState(null)
+  const [heatmapLoading, setHeatmapLoading] = useState(false)
+  const [clientAssets, setClientAssets] = useState([])
+  const [clientAssetsTotal, setClientAssetsTotal] = useState(0)
+  const [selectedAssets, setSelectedAssets] = useState(new Set())
+  const [assetSearch, setAssetSearch] = useState('')
+  const [coverageData, setCoverageData] = useState(null)
+  const [coverageLoading, setCoverageLoading] = useState(false)
+  const [coverageCacheStatus, setCoverageCacheStatus] = useState(null)
+
+  const loadFleetSummary = async () => {
+    setFleetSummaryLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/routes/fleet-summary?limit=20`)
+      if (res.ok) setFleetSummary(await res.json())
+    } finally {
+      setFleetSummaryLoading(false)
+    }
+  }
+
+  const loadClientSummary = async (cid, assetFilter) => {
+    const id = (cid ?? summaryClientId).toString().trim()
+    if (!id) return
+    setClientSummaryLoading(true)
+    try {
+      const active = assetFilter ?? selectedAssets
+      const assetParam = active.size > 0 ? `&asset_ids=${[...active].join(',')}` : ''
+      const res = await fetch(`${API_BASE}/routes/client-summary?client_id=${id}&limit=20${assetParam}`)
+      if (res.ok) setClientSummary(await res.json())
+    } finally {
+      setClientSummaryLoading(false)
+    }
+  }
+
+  const checkCoverageCache = async (id) => {
+    if (!id) return
+    fetch(`${API_BASE}/routes/signal-loss/coverage-summary/cache-status?client_id=${id}`)
+      .then((res) => { if (res.ok) res.json().then(setCoverageCacheStatus) })
+  }
+
+  const loadClientAssets = async (cid) => {
+    const id = (cid ?? summaryClientId).toString().trim()
+    if (!id) return
+    const res = await fetch(`${API_BASE}/routes/client-assets?client_id=${id}`)
+    if (res.ok) {
+      const data = await res.json()
+      setClientAssets(data.assets ?? [])
+      setClientAssetsTotal(data.total_assets ?? data.assets?.length ?? 0)
+      setSelectedAssets(new Set())
+      setAssetSearch('')
+    }
+    setCoverageData(null)
+    setCoverageCacheStatus(null)
+    checkCoverageCache(id)
+  }
+
+  const loadHeatmap = async () => {
+    setHeatmapLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/routes/fleet-heatmap?limit_routes=12&limit_clients=10`)
+      if (res.ok) setHeatmapData(await res.json())
+    } finally {
+      setHeatmapLoading(false)
+    }
+  }
+
+  const loadCoverageData = async (limitAssets = 20, forceRefresh = false) => {
+    const id = summaryClientId.trim()
+    if (!id) return
+    setCoverageLoading(true)
+    if (forceRefresh) setCoverageData(null)
+    try {
+      const url = `${API_BASE}/routes/signal-loss/coverage-summary?client_id=${id}&limit_assets=${limitAssets}${forceRefresh ? '&force_refresh=true' : ''}`
+      const res = await fetch(url)
+      if (res.ok) {
+        const data = await res.json()
+        setCoverageData(data)
+        setCoverageCacheStatus({ exists: true, stale: false, cached_at: data.cached_at })
+      }
+    } finally {
+      setCoverageLoading(false)
+    }
+  }
+
+  const openCoverageMapWindow = () => {
+    if (!coverageData || !Array.isArray(coverageData.hotspots)) return
+    const hotspots = coverageData.hotspots
+    if (hotspots.length === 0) {
+      return
+    }
+
+    const mapWindow = window.open('', '_blank', 'width=1300,height=850')
+    if (!mapWindow) return
+
+    const title = `Cobertura GPS — clientId=${coverageData.client_id} · ${coverageData.total_assets_analyzed} assets`
+    const safeHotspots = JSON.stringify(hotspots).replaceAll('</', String.raw`<\/`)
+    const structural = coverageData.structural_zones
+    const isolated = coverageData.isolated_events
+
+    const htmlContent = `
+      <!doctype html>
+      <html lang="es">
+        <head>
+          <meta charset="utf-8"/>
+          <meta name="viewport" content="width=device-width,initial-scale=1"/>
+          <title>${title}</title>
+          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+          <style>
+            html,body{margin:0;padding:0;height:100%;font-family:Inter,system-ui,sans-serif;}
+            #map{width:100%;height:calc(100% - 56px);}
+            .hdr{height:56px;display:flex;align-items:center;justify-content:space-between;
+              padding:0 16px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;color:#111827;gap:12px;}
+            .badge{border-radius:12px;padding:2px 10px;font-size:12px;font-weight:600;}
+          </style>
+        </head>
+        <body>
+          <div class="hdr">
+            <span><b>${title}</b></span>
+            <span>
+              <span class="badge" style="background:#fee2e2;color:#991b1b;">⛔ Zona estructural: ${structural}</span>
+              &nbsp;
+              <span class="badge" style="background:#fef9c3;color:#854d0e;">⚡ Evento aislado: ${isolated}</span>
+            </span>
+          </div>
+          <div id="map"></div>
+          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+          <script>
+            const hotspots = ${safeHotspots};
+
+            const map = L.map('map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+              maxZoom:19, attribution:'&copy; OpenStreetMap contributors'
+            }).addTo(map);
+
+            const structLayer = L.layerGroup().addTo(map);
+            const isolLayer   = L.layerGroup().addTo(map);
+            const bounds = [];
+
+            const escHtml = (v) => String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+            hotspots.forEach((h) => {
+              const pos = [h.lat, h.lon];
+              bounds.push(pos);
+              const isStruct = h.category === 'zona_sin_cobertura';
+              const r = Math.min(22, 5 + h.asset_count * 3);
+              const color = isStruct ? '#dc2626' : '#f59e0b';
+              const fill  = isStruct ? '#fca5a5' : '#fde68a';
+              const layer = isStruct ? structLayer : isolLayer;
+
+              L.circleMarker(pos, {
+                radius: r,
+                color,
+                fillColor: fill,
+                fillOpacity: 0.75,
+                weight: isStruct ? 2 : 1,
+              }).addTo(layer).bindPopup(
+                '<b>' + (isStruct ? '⛔ Zona sin cobertura' : '⚡ Evento aislado') + '</b><br/>' +
+                'Assets afectados: <b>' + h.asset_count + '</b><br/>' +
+                'Eventos sin GPS: <b>' + h.event_count + '</b><br/>' +
+                'IDs: ' + escHtml(h.asset_ids.slice(0,10).join(', ')) + (h.asset_ids.length > 10 ? '…' : '') + '<br/>' +
+                'Lat: ' + h.lat + ' Lon: ' + h.lon
+              );
+            });
+
+            const legend = L.control({ position: 'bottomleft' });
+            legend.onAdd = () => {
+              const d = L.DomUtil.create('div');
+              d.style.cssText = 'background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:10px 14px;font-size:12px;line-height:2;';
+              d.innerHTML =
+                '<b>Cobertura GPS — clientId ${coverageData.client_id}</b><br/>' +
+                '<span style="color:#dc2626">●</span> Zona estructural sin cobertura (≥2 assets)<br/>' +
+                '<span style="color:#f59e0b">●</span> Evento aislado (1 asset)<br/>' +
+                'Tamaño del círculo = assets afectados<br/>' +
+                'Assets analizados: <b>${coverageData.total_assets_analyzed}</b>';
+              return d;
+            };
+            legend.addTo(map);
+
+            L.control.layers(null, {
+              'Zonas estructurales': structLayer,
+              'Eventos aislados': isolLayer,
+            }, { collapsed: false }).addTo(map);
+
+            if (bounds.length > 0) map.fitBounds(L.latLngBounds(bounds), { padding: [28, 28] });
+          </script>
+        </body>
+      </html>
+    `
+    const blob = new Blob([htmlContent], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    mapWindow.location.replace(url)
+    mapWindow.addEventListener('beforeunload', () => URL.revokeObjectURL(url), { once: true })
+  }
 
   const loadRows = async (
     nextOffset = offset,
@@ -163,6 +368,8 @@ function App() {
       setSignalLossData(null)
       setSignalLossAnomalies(null)
       setStopsData(null)
+      setSelectedMapRouteIndex(null)
+      setExpandedRouteIndex(null)
     }
 
     if (!assetValue || !clientValue) {
@@ -763,8 +970,9 @@ function App() {
   }
 
   const hasValidGpsPoint = (record) => {
-    const latitude = Number(record?.latitude)
-    const longitude = Number(record?.longitude)
+    if (record?.latitude == null || record?.longitude == null) return false
+    const latitude = Number(record.latitude)
+    const longitude = Number(record.longitude)
     return Number.isFinite(latitude) && Number.isFinite(longitude)
   }
 
@@ -1173,10 +1381,18 @@ function App() {
       return
     }
 
-    const orderedPoints = [...routeDetection.all_records]
+    const sourceRecords = selectedMapRouteIndex !== null
+      ? (() => {
+          const route = routeDetection.complete_routes[selectedMapRouteIndex]
+          if (!route) return routeDetection.all_records
+          return routeDetection.all_records.filter((_, i) => i >= route.start_index && i <= route.end_index)
+        })()
+      : routeDetection.all_records
+
+    const orderedPoints = [...sourceRecords]
       .filter((record) => record?.gps_timestamp)
       .sort((left, right) => String(left.gps_timestamp).localeCompare(String(right.gps_timestamp)))
-      .filter((record) => Number.isFinite(Number(record.latitude)) && Number.isFinite(Number(record.longitude)))
+      .filter((record) => record?.latitude != null && record?.longitude != null && Number.isFinite(Number(record.latitude)) && Number.isFinite(Number(record.longitude)))
       .map((record, index) => ({
         sequence: index + 1,
         gpsTimestamp: record.gps_timestamp,
@@ -1406,9 +1622,11 @@ function App() {
 
   const openCompleteRouteIntervalMap = async (route, routeIndex) => {
     const intervalRecords = getRouteIntervalRecords(route)
-    const intervalPoints = intervalRecords
-      .filter((record) => Number.isFinite(Number(record.latitude)) && Number.isFinite(Number(record.longitude)))
-      .map((record, index) => ({
+
+    // Build all points preserving lost-GPS records as gap markers
+    const allPoints = intervalRecords.map((record, index) => {
+      const hasGps = hasValidGpsPoint(record)
+      return {
         sequence: index + 1,
         orderTimestamp: record.order_timestamp,
         gpsTimestamp: record.gps_timestamp,
@@ -1416,13 +1634,18 @@ function App() {
         eventType: record.event_type,
         eventKey: record.event_key,
         eventDescription: record.event_description,
-        latitude: Number(record.latitude),
-        longitude: Number(record.longitude),
+        latitude: hasGps ? Number(record.latitude) : null,
+        longitude: hasGps ? Number(record.longitude) : null,
+        hasGps,
         role: getIntervalRecordRole(route, record),
-      }))
+      }
+    })
 
-    if (intervalPoints.length < 2) {
-      setError('No hay suficientes puntos válidos para pintar el mapa de esta ruta completa.')
+    const gpsPoints = allPoints.filter((p) => p.hasGps)
+    const lostCount = allPoints.length - gpsPoints.length
+
+    if (gpsPoints.length < 2) {
+      setError('No hay suficientes puntos GPS válidos para pintar el mapa de esta ruta completa.')
       return
     }
 
@@ -1465,15 +1688,17 @@ function App() {
       }
     }
 
-    const mapWindow = window.open('', '_blank', 'width=1200,height=800')
+    const windowName = `route-map-complete-${routeIndex}`
+    const mapWindow = window.open('', windowName, 'width=1200,height=800')
     if (!mapWindow) {
       setError('No se pudo abrir la ventana del mapa. Revisa el bloqueador de popups del navegador.')
       return
     }
 
-    const safePointsJson = JSON.stringify(intervalPoints).replaceAll('</', String.raw`<\/`)
+    const safePointsJson = JSON.stringify(allPoints).replaceAll('</', String.raw`<\/`)
     const safeRoadsJson = JSON.stringify(matchedRoadSegments).replaceAll('</', String.raw`<\/`)
     const title = `Ruta completa #${routeIndex + 1} assetId=${routeDetection?.asset_id || '-'} clientId=${routeDetection?.client_id || '-'}`
+    const lostLabel = lostCount > 0 ? ` · ⚡ ${lostCount} sin GPS` : ''
 
     const htmlContent = `
       <!doctype html>
@@ -1520,7 +1745,7 @@ function App() {
         </head>
         <body>
           <div class="header">
-            <span>${title} · puntos: ${intervalPoints.length} · carreteras esperadas: ${matchedRoadLabels.length}</span>
+            <span>${title} · GPS: ${gpsPoints.length}${lostLabel} · carreteras: ${matchedRoadLabels.length}</span>
             <span id="routing-status" style="font-size:11px;color:#6b7280;margin-left:8px;"></span>
             <div class="controls">
               <button id="toggle-route" type="button">Ocultar ruta</button>
@@ -1554,9 +1779,11 @@ function App() {
               attribution: '&copy; OpenStreetMap contributors',
             }).addTo(map);
 
-            const latlngs = points.map((point) => [point.latitude, point.longitude]);
+            // Separate GPS and lost-signal points
+            const gpsPoints = points.filter((p) => p.hasGps);
+            const lostCount = points.length - gpsPoints.length;
 
-            const allBoundsPoints = [...latlngs];
+            const allBoundsPoints = gpsPoints.map((p) => [p.latitude, p.longitude]);
 
             expectedRoads.forEach((road) => {
               const roadLine = L.polyline(road.latlngs, {
@@ -1576,11 +1803,89 @@ function App() {
               );
             });
 
-            let routeLine = L.polyline(latlngs, {
-              color: '#2563eb',
-              weight: 4,
-              opacity: 0.95,
-            }).addTo(routeLayer);
+            // Build GPS segments (consecutive runs of hasGps points)
+            // and gap bridges (dashed lines between last GPS before loss and first GPS after)
+            const gpsSections = [];
+            let currentSection = [];
+            points.forEach((p) => {
+              if (p.hasGps) {
+                currentSection.push(p);
+              } else {
+                if (currentSection.length > 0) {
+                  gpsSections.push(currentSection);
+                  currentSection = [];
+                }
+              }
+            });
+            if (currentSection.length > 0) gpsSections.push(currentSection);
+
+            const routeLines = [];
+            gpsSections.forEach((section, idx) => {
+              const latlngs = section.map((p) => [p.latitude, p.longitude]);
+              const line = L.polyline(latlngs, { color: '#2563eb', weight: 4, opacity: 0.95 }).addTo(routeLayer);
+              routeLines.push(line);
+
+              // Draw dashed bridge to next section
+              if (idx < gpsSections.length - 1) {
+                const bridgeEnd = gpsSections[idx + 1][0];
+                const bridgeLatlngs = [
+                  [section[section.length - 1].latitude, section[section.length - 1].longitude],
+                  [bridgeEnd.latitude, bridgeEnd.longitude],
+                ];
+                L.polyline(bridgeLatlngs, {
+                  color: '#f97316',
+                  weight: 2,
+                  opacity: 0.7,
+                  dashArray: '8,6',
+                }).addTo(routeLayer).bindPopup('<b>⚡ Brecha sin GPS</b><br/>Tramo sin conectividad');
+              }
+            });
+
+            // Interpolate lost-point positions for gap markers
+            function parseTimeMs(ts) {
+              if (!ts) return null;
+              const t = new Date(ts).getTime();
+              return Number.isFinite(t) ? t : null;
+            }
+
+            // Build time-indexed list of GPS points for interpolation
+            const gpsTimeline = gpsPoints
+              .map((p) => ({ tMs: parseTimeMs(p.orderTimestamp || p.gpsTimestamp || p.serverTimestamp), lat: p.latitude, lon: p.longitude }))
+              .filter((p) => p.tMs != null);
+
+            function interpolatePosition(tMs) {
+              if (gpsTimeline.length < 2) return null;
+              let prev = null, next = null;
+              for (const g of gpsTimeline) {
+                if (g.tMs <= tMs) prev = g;
+                else if (next == null) next = g;
+              }
+              if (!prev || !next || next.tMs <= prev.tMs) return null;
+              const ratio = (tMs - prev.tMs) / (next.tMs - prev.tMs);
+              return [prev.lat + ratio * (next.lat - prev.lat), prev.lon + ratio * (next.lon - prev.lon)];
+            }
+
+            // Draw lost-point gap markers
+            const lostIcon = L.divIcon({
+              className: '',
+              html: '<div style="background:#f97316;color:#fff;border:2px solid #7c2d12;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
+              iconSize: [14, 14],
+              iconAnchor: [7, 7],
+            });
+
+            points.filter((p) => !p.hasGps).forEach((p) => {
+              const tMs = parseTimeMs(p.orderTimestamp || p.gpsTimestamp || p.serverTimestamp);
+              const pos = tMs != null ? interpolatePosition(tMs) : null;
+              if (!pos) return;
+              L.marker(pos, { icon: lostIcon }).addTo(routeLayer).bindPopup(
+                '<b>⚡ Sin señal GPS</b><br/>' +
+                '#: ' + p.sequence + '<br/>' +
+                'eventType: ' + escapeHtml(p.eventType) + '<br/>' +
+                'desc: ' + escapeHtml(p.eventDescription) + '<br/>' +
+                'order: ' + escapeHtml(p.orderTimestamp) + '<br/>' +
+                'key: ' + escapeHtml(p.eventKey)
+              );
+            });
 
             const _RAD = Math.PI / 180;
             function haversinKm(lat1, lon1, lat2, lon2) {
@@ -1607,36 +1912,32 @@ function App() {
 
             async function routeLargeGaps() {
               const GAP_KM = 20;
-              const gapSegments = [];
-              for (let i = 0; i < points.length - 1; i++) {
-                const dist = haversinKm(points[i].latitude, points[i].longitude, points[i + 1].latitude, points[i + 1].longitude);
-                if (dist > GAP_KM) gapSegments.push({ i, dist: dist.toFixed(1) });
-              }
-              if (gapSegments.length === 0) return;
-
-              const statusEl = document.getElementById('routing-status');
-              statusEl.textContent = 'Enrutando ' + gapSegments.length + ' tramo(s) via OSRM...';
-
-              const routedLatlngs = [[points[0].latitude, points[0].longitude]];
-              for (let i = 0; i < points.length - 1; i++) {
-                const p1 = points[i];
-                const p2 = points[i + 1];
-                const dist = haversinKm(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
-                if (dist > GAP_KM) {
-                  const routed = await osrmSegment(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
-                  if (routed && routed.length > 1) {
-                    routedLatlngs.push(...routed.slice(1));
+              // Only route large gaps within each GPS section (ignore lost-point bridges)
+              for (const section of gpsSections) {
+                const gapIdxs = [];
+                for (let i = 0; i < section.length - 1; i++) {
+                  const dist = haversinKm(section[i].latitude, section[i].longitude, section[i+1].latitude, section[i+1].longitude);
+                  if (dist > GAP_KM) gapIdxs.push({ i, dist: dist.toFixed(1) });
+                }
+                if (gapIdxs.length === 0) continue;
+                const statusEl = document.getElementById('routing-status');
+                statusEl.textContent = 'Enrutando ' + gapIdxs.length + ' tramo(s) via OSRM...';
+                const routedLatlngs = [[section[0].latitude, section[0].longitude]];
+                for (let i = 0; i < section.length - 1; i++) {
+                  const p1 = section[i], p2 = section[i + 1];
+                  const dist = haversinKm(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
+                  if (dist > GAP_KM) {
+                    const routed = await osrmSegment(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
+                    routedLatlngs.push(...(routed && routed.length > 1 ? routed.slice(1) : [[p2.latitude, p2.longitude]]));
                   } else {
                     routedLatlngs.push([p2.latitude, p2.longitude]);
                   }
-                } else {
-                  routedLatlngs.push([p2.latitude, p2.longitude]);
                 }
+                // replace the section's polyline with the routed version
+                routeLines.forEach((l) => routeLayer.removeLayer(l));
+                L.polyline(routedLatlngs, { color: '#2563eb', weight: 4, opacity: 0.95 }).addTo(routeLayer);
+                statusEl.textContent = '✓ OSRM: tramos enrutados por carretera';
               }
-
-              routeLayer.removeLayer(routeLine);
-              routeLine = L.polyline(routedLatlngs, { color: '#2563eb', weight: 4, opacity: 0.95 }).addTo(routeLayer);
-              statusEl.textContent = '✓ OSRM: ' + gapSegments.length + ' tramo(s) enrutado(s) por carretera';
             }
 
             routeLargeGaps();
@@ -1654,7 +1955,7 @@ function App() {
               iconAnchor: [23, 11],
             });
 
-            points.forEach((point) => {
+            gpsPoints.forEach((point) => {
               const isStart = point.role === 'start';
               const isEnd = point.role === 'end';
 
@@ -1674,7 +1975,7 @@ function App() {
               }).addTo(routeLayer);
 
               marker.bindPopup(
-                '<b>' + (isStart ? 'INICIO' : (isEnd ? 'FIN' : 'Punto')) + '</b><br/>' +
+                '<b>' + (isStart ? 'INICIO' : (isEnd ? 'FIN' : 'Punto GPS')) + '</b><br/>' +
                 '#: ' + point.sequence + '<br/>' +
                 'order: ' + escapeHtml(point.orderTimestamp) + '<br/>' +
                 'gps: ' + escapeHtml(point.gpsTimestamp) + '<br/>' +
@@ -1687,7 +1988,25 @@ function App() {
               );
             });
 
-            map.fitBounds(L.latLngBounds(allBoundsPoints), { padding: [24, 24] });
+            if (lostCount > 0) {
+              const legend = L.control({ position: 'bottomleft' });
+              legend.onAdd = () => {
+                const div = L.DomUtil.create('div');
+                div.style.cssText = 'background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:8px 12px;font-size:12px;line-height:1.6;';
+                div.innerHTML =
+                  '<b>Leyenda</b><br/>' +
+                  '<span style="color:#2563eb">━━</span> Ruta con GPS<br/>' +
+                  '<span style="color:#f97316">┄┄</span> Brecha sin conectividad<br/>' +
+                  '⚡ Punto perdido (posición estimada)<br/>' +
+                  'Total sin GPS: <b>' + lostCount + '</b>';
+                return div;
+              };
+              legend.addTo(map);
+            }
+
+            if (allBoundsPoints.length > 0) {
+              map.fitBounds(L.latLngBounds(allBoundsPoints), { padding: [24, 24] });
+            }
 
             const routeToggleButton = document.getElementById('toggle-route');
             const roadsToggleButton = document.getElementById('toggle-roads');
@@ -1723,6 +2042,7 @@ function App() {
     const blob = new Blob([htmlContent], { type: 'text/html' })
     const blobUrl = URL.createObjectURL(blob)
     mapWindow.location.replace(blobUrl)
+    mapWindow.focus()
     mapWindow.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
   }
 
@@ -1989,6 +2309,203 @@ function App() {
     popup.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
   }
 
+  const openSignalLossCoverageMap = () => {
+    if (!signalLossData) return
+
+    const allPts = signalLossData.all_points || []
+    const gpsPts = allPts.filter((p) => p.latitude != null && p.longitude != null)
+    if (gpsPts.length < 2) {
+      setError('No hay suficientes puntos GPS para mostrar el mapa de cobertura.')
+      return
+    }
+
+    const anomalies = signalLossAnomalies?.anomalies || []
+    const mapWindow = window.open('', '_blank', 'width=1200,height=800')
+    if (!mapWindow) {
+      setError('No se pudo abrir la ventana del mapa. Revisa el bloqueador de popups.')
+      return
+    }
+
+    const title = `Mapa de cobertura — assetId=${signalLossData.asset_id || '-'} clientId=${signalLossData.client_id || '-'}`
+    const lostCount = allPts.filter((p) => p.latitude == null).length
+    const estCount = allPts.filter((p) => p.latitude == null && p.estimated_latitude != null).length
+
+    const safeGpsJson = JSON.stringify(allPts).replaceAll('</', String.raw`<\/`)
+    const safeAnomalyJson = JSON.stringify(anomalies).replaceAll('</', String.raw`<\/`)
+
+    const htmlContent = `
+      <!doctype html>
+      <html lang="es">
+        <head>
+          <meta charset="utf-8"/>
+          <meta name="viewport" content="width=device-width, initial-scale=1"/>
+          <title>${title}</title>
+          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+          <style>
+            html,body{margin:0;padding:0;height:100%;font-family:Inter,system-ui,sans-serif;}
+            #map{width:100%;height:calc(100% - 56px);}
+            .header{height:56px;display:flex;align-items:center;justify-content:space-between;
+              padding:0 16px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;color:#111827;}
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <span>${title} · GPS reales: ${gpsPts.length} · sin GPS: ${lostCount} · estimados: ${estCount}</span>
+          </div>
+          <div id="map"></div>
+          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+          <script>
+            const allPts = ${safeGpsJson};
+            const anomalies = ${safeAnomalyJson};
+
+            const map = L.map('map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+
+            const escapeHtml = (v) => String(v ?? '')
+              .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+            // --- 1. Tramos con GPS real (azul sólido) ---
+            const gpsLayer = L.layerGroup().addTo(map);
+            const lossLayer = L.layerGroup().addTo(map);
+            const estLayer  = L.layerGroup().addTo(map);
+
+            const allBounds = [];
+
+            // Build GPS segments (consecutive valid-GPS points)
+            const sections = [];
+            let cur = [];
+            allPts.forEach((p) => {
+              if (p.latitude != null) {
+                cur.push(p);
+              } else {
+                if (cur.length > 0) { sections.push(cur); cur = []; }
+              }
+            });
+            if (cur.length > 0) sections.push(cur);
+
+            sections.forEach((sec) => {
+              const ll = sec.map((p) => [p.latitude, p.longitude]);
+              allBounds.push(...ll);
+              L.polyline(ll, { color: '#2563eb', weight: 3, opacity: 0.85 }).addTo(gpsLayer);
+            });
+
+            // GPS real markers (small blue dots)
+            allPts.filter((p) => p.latitude != null && !p.is_signal_loss).forEach((p) => {
+              L.circleMarker([p.latitude, p.longitude], {
+                radius: 3, color: '#1d4ed8', fillColor: '#60a5fa', fillOpacity: 0.9, weight: 1
+              }).addTo(gpsLayer).bindPopup(
+                '<b>GPS real</b><br/>gps: ' + escapeHtml(p.gps_timestamp) +
+                '<br/>diff: ' + p.diff_seconds + 's' +
+                '<br/>lat: ' + p.latitude + ' lon: ' + p.longitude
+              );
+            });
+
+            // --- 2. Puntos dentro de segmento sin señal con GPS real ---
+            allPts.filter((p) => p.latitude != null && p.is_signal_loss).forEach((p) => {
+              L.circleMarker([p.latitude, p.longitude], {
+                radius: 5, color: '#7c2d12', fillColor: '#f97316', fillOpacity: 0.95, weight: 1.5
+              }).addTo(lossLayer).bindPopup(
+                '<b>⚡ GPS dentro de pérdida</b><br/>gps: ' + escapeHtml(p.gps_timestamp) +
+                '<br/>diff: ' + p.diff_seconds + 's' +
+                '<br/>lat: ' + p.latitude + ' lon: ' + p.longitude
+              );
+            });
+
+            // --- 3. Posiciones estimadas para puntos sin GPS (interpolado) ---
+            allPts.filter((p) => p.latitude == null && p.estimated_latitude != null).forEach((p) => {
+              const pos = [p.estimated_latitude, p.estimated_longitude];
+              L.circleMarker(pos, {
+                radius: 4,
+                color: '#92400e',
+                fillColor: '#fde68a',
+                fillOpacity: 0.85,
+                weight: 1,
+                dashArray: '3,2',
+              }).addTo(estLayer).bindPopup(
+                '<b>⚡ Sin GPS (posición estimada)</b><br/>' +
+                'gps: ' + escapeHtml(p.gps_timestamp) + '<br/>' +
+                'diff: ' + p.diff_seconds + 's<br/>' +
+                'est lat: ' + p.estimated_latitude + '<br/>' +
+                'est lon: ' + p.estimated_longitude
+              );
+            });
+
+            // --- 4. Puentes de gaps por anomalías (línea punteada roja) ---
+            anomalies.forEach((a, idx) => {
+              const pb = a.point_before;
+              const pa = a.point_after;
+              if (!pb || !pa) return;
+              const bridgeLl = [
+                [pb.latitude, pb.longitude],
+                [pa.latitude, pa.longitude],
+              ];
+              allBounds.push(...bridgeLl);
+              const cat = { salto_sospechoso: '⚠ Salto sospechoso', apagado_en_reposo: '⚠ Apagado en reposo', sin_cobertura: 'Sin cobertura' }[a.category] || a.category;
+              const color = a.category === 'sin_cobertura' ? '#f97316' : '#dc2626';
+              L.polyline(bridgeLl, { color, weight: 2.5, opacity: 0.8, dashArray: '10,6' })
+                .addTo(lossLayer)
+                .bindPopup(
+                  '<b>Zona sin cobertura #' + (idx + 1) + '</b><br/>' +
+                  'Categoría: <b>' + escapeHtml(cat) + '</b><br/>' +
+                  'Duración: ' + a.duration_minutes.toFixed(1) + ' min<br/>' +
+                  'Distancia GPS: ' + (a.distance_km != null ? a.distance_km.toFixed(2) + ' km' : '—') + '<br/>' +
+                  'Vel. implícita: ' + (a.implied_speed_kmh != null ? a.implied_speed_kmh.toFixed(1) + ' km/h' : '—')
+                );
+
+              // Midpoint marker
+              const midLat = (pb.latitude + pa.latitude) / 2;
+              const midLon = (pb.longitude + pa.longitude) / 2;
+              const lossIcon = L.divIcon({
+                className: '',
+                html: '<div style="background:' + color + ';color:#fff;border:2px solid #7f1d1d;border-radius:12px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap;">⚡ ' + a.duration_minutes.toFixed(0) + 'min</div>',
+                iconAnchor: [30, 10],
+              });
+              L.marker([midLat, midLon], { icon: lossIcon }).addTo(lossLayer);
+            });
+
+            // --- Leyenda ---
+            const legend = L.control({ position: 'bottomleft' });
+            legend.onAdd = () => {
+              const d = L.DomUtil.create('div');
+              d.style.cssText = 'background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:8px 12px;font-size:12px;line-height:1.8;min-width:200px;';
+              d.innerHTML =
+                '<b>Leyenda cobertura GPS</b><br/>' +
+                '<span style="color:#2563eb">━━</span> Tramo con GPS real<br/>' +
+                '<span style="color:#f97316">┄┄</span> Brecha sin cobertura<br/>' +
+                '<span style="color:#dc2626">┄┄</span> Salto sospechoso / apagado<br/>' +
+                '🔵 Punto GPS real<br/>' +
+                '🟠 GPS real dentro de pérdida<br/>' +
+                '🟡 Posición estimada (sin GPS)<br/>' +
+                '⚡ Etiqueta de zona sin cobertura';
+              return d;
+            };
+            legend.addTo(map);
+
+            // --- Layer control ---
+            L.control.layers(null, {
+              'Tramos GPS': gpsLayer,
+              'Zonas sin cobertura': lossLayer,
+              'Estimados sin GPS': estLayer,
+            }, { collapsed: false }).addTo(map);
+
+            if (allBounds.length > 0) {
+              map.fitBounds(L.latLngBounds(allBounds), { padding: [24, 24] });
+            }
+          </script>
+        </body>
+      </html>
+    `
+
+    const blob = new Blob([htmlContent], { type: 'text/html' })
+    const blobUrl = URL.createObjectURL(blob)
+    mapWindow.location.replace(blobUrl)
+    mapWindow.addEventListener('beforeunload', () => URL.revokeObjectURL(blobUrl), { once: true })
+  }
+
   const openSignalLossChartWindow = () => {
     if (!signalLossData) return
 
@@ -2246,19 +2763,25 @@ function App() {
             const stops = ${safeStops};
 
             const CAT_COLORS = {
-              gasolinera:               '#f59e0b',
-              hotel:                    '#8b5cf6',
-              restaurante:              '#22c55e',
-              tienda_conveniencia:      '#3b82f6',
-              motor_apagado:            '#64748b',
-              ralenti:                  '#94a3b8',
-              parada_no_autorizada:     '#ef4444',
+              gasolinera:                '#f59e0b',
+              hotel:                     '#8b5cf6',
+              restaurante:               '#22c55e',
+              tienda_conveniencia:       '#3b82f6',
+              farmacia:                  '#06b6d4',
+              hospital:                  '#0891b2',
+              taller_mecanico:           '#78716c',
+              terminal_carga:            '#6366f1',
+              motor_apagado:             '#64748b',
+              ralenti:                   '#94a3b8',
+              parada_no_autorizada:      '#ef4444',
               estacionamiento_prolongado:'#f97316',
-              pernocta_fuera_de_base:   '#dc2626',
-              parada_en_geocerca:       '#0ea5e9',
-              punto_de_control:         '#10b981',
-              entrega:                  '#10b981',
-              parada_en_carretera:      '#94a3b8',
+              pernocta_fuera_de_base:    '#dc2626',
+              parada_larga:              '#b45309',
+              parada_en_geocerca:        '#0ea5e9',
+              punto_de_control:          '#10b981',
+              entrega:                   '#10b981',
+              en_carretera:              '#78716c',
+              parada_en_carretera:       '#94a3b8',
             };
 
             const fmtTs = (v) => {
@@ -3111,6 +3634,695 @@ function App() {
         <>
 
       <section className="card">
+        <h2>0) Resumen Ejecutivo de Rutas</h2>
+        <p className="subtitle">
+          Análisis agregado de rutas detectadas en la flota. Fuente: dataset histórico de entrenamiento ML.
+        </p>
+
+        {/* Tab selector */}
+        <div className="toolbar" style={{ marginBottom: 0, borderBottom: '2px solid #e5e7eb', paddingBottom: 0 }}>
+          {[
+            { key: 'fleet', label: 'Flota completa' },
+            { key: 'client', label: 'Por clientId' },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setSummaryTab(key)}
+              style={{
+                borderRadius: '6px 6px 0 0',
+                fontWeight: summaryTab === key ? 700 : 400,
+                color: summaryTab === key ? '#2563eb' : '#6b7280',
+                background: 'none',
+                border: 'none',
+                borderBottom: summaryTab === key ? '3px solid #2563eb' : '3px solid transparent',
+                padding: '8px 18px',
+                cursor: 'pointer',
+                fontSize: 14,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── TAB: FLOTA ── */}
+        {summaryTab === 'fleet' && (
+          <div style={{ marginTop: 16 }}>
+            {!fleetSummary && !fleetSummaryLoading && (
+              <div className="toolbar">
+                <button onClick={() => { loadFleetSummary(); loadHeatmap() }}>
+                  Cargar resumen de flota
+                </button>
+              </div>
+            )}
+            {fleetSummaryLoading && <p className="subtitle">Cargando datos de flota...</p>}
+            {fleetSummary?.error && <p className="subtitle warning">{fleetSummary.error}</p>}
+
+            {fleetSummary && !fleetSummary.error && (
+              <>
+                {/* Stats cards */}
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+                  {[
+                    { label: 'Viajes totales', value: fleetSummary.stats.total_trips?.toLocaleString() },
+                    { label: 'Rutas únicas', value: fleetSummary.stats.unique_routes?.toLocaleString() },
+                    { label: 'Unidades (assets)', value: fleetSummary.stats.unique_assets?.toLocaleString() },
+                    { label: 'Clientes', value: fleetSummary.stats.unique_clients?.toLocaleString() },
+                  ].map(({ label, value }) => (
+                    <div key={label} style={{
+                      background: '#f0f9ff',
+                      border: '1px solid #bae6fd',
+                      borderRadius: 8,
+                      padding: '12px 20px',
+                      minWidth: 130,
+                      textAlign: 'center',
+                    }}>
+                      <div style={{ fontSize: 26, fontWeight: 700, color: '#0369a1' }}>{value ?? '—'}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Gráfico de barras horizontal - Top rutas */}
+                {fleetSummary.top_routes.length > 0 && (() => {
+                  const maxCount = fleetSummary.top_routes[0].trip_count
+                  const BAR_H = 22
+                  const GAP = 6
+                  const LABEL_W = 260
+                  const BAR_MAX_W = 300
+                  const COUNT_W = 50
+                  const W = LABEL_W + BAR_MAX_W + COUNT_W + 24
+                  const H = fleetSummary.top_routes.length * (BAR_H + GAP) + 30
+                  return (
+                    <>
+                      <h3 style={{ marginBottom: 8 }}>Top rutas por frecuencia (flota completa)</h3>
+                      <div style={{ overflowX: 'auto' }}>
+                        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block', fontFamily: 'system-ui, sans-serif', fontSize: 11 }}>
+                          {fleetSummary.top_routes.map((r, i) => {
+                            const barW = maxCount > 0 ? (r.trip_count / maxCount) * BAR_MAX_W : 0
+                            const y = i * (BAR_H + GAP) + 20
+                            const shortLabel = r.route_label.length > 38 ? r.route_label.slice(0, 37) + '…' : r.route_label
+                            return (
+                              <g key={r.route_label}>
+                                <text x={LABEL_W - 6} y={y + BAR_H / 2 + 4} textAnchor="end" fill="#374151" fontSize={11}>{shortLabel}</text>
+                                <rect x={LABEL_W} y={y} width={Math.max(barW, 2)} height={BAR_H} rx={3} fill={i === 0 ? '#2563eb' : i < 3 ? '#3b82f6' : '#93c5fd'} />
+                                <text x={LABEL_W + barW + 6} y={y + BAR_H / 2 + 4} fill="#374151" fontSize={11}>{r.trip_count}</text>
+                              </g>
+                            )
+                          })}
+                          <line x1={LABEL_W} y1={10} x2={LABEL_W} y2={H} stroke="#d1d5db" strokeWidth={1} />
+                        </svg>
+                      </div>
+                    </>
+                  )
+                })()}
+
+                {/* Timeline mensual */}
+                {fleetSummary.monthly_counts.length > 1 && (() => {
+                  const pts = fleetSummary.monthly_counts
+                  const maxV = Math.max(...pts.map(p => p.trip_count))
+                  const W = 680, H = 120
+                  const PL = 40, PR = 16, PT = 10, PB = 30
+                  const iW = W - PL - PR
+                  const iH = H - PT - PB
+                  const xOf = i => PL + (i / (pts.length - 1)) * iW
+                  const yOf = v => PT + iH - (v / maxV) * iH
+                  const polyline = pts.map((p, i) => `${xOf(i).toFixed(1)},${yOf(p.trip_count).toFixed(1)}`).join(' ')
+                  const labelStep = Math.ceil(pts.length / 8)
+                  return (
+                    <>
+                      <h3 style={{ marginBottom: 4, marginTop: 20 }}>Viajes por mes (flota completa)</h3>
+                      <div style={{ overflowX: 'auto' }}>
+                        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block', fontFamily: 'monospace', fontSize: 10 }}>
+                          <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#555" strokeWidth={1} />
+                          <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="#555" strokeWidth={1} />
+                          {[0, Math.round(maxV / 2), maxV].map(v => (
+                            <g key={v}>
+                              <line x1={PL - 4} y1={yOf(v)} x2={PL} y2={yOf(v)} stroke="#888" strokeWidth={1} />
+                              <text x={PL - 6} y={yOf(v) + 3} textAnchor="end" fill="#888">{v}</text>
+                            </g>
+                          ))}
+                          <polyline points={polyline} fill="none" stroke="#2563eb" strokeWidth={2} />
+                          {pts.map((p, i) => (
+                            <g key={p.month}>
+                              <circle cx={xOf(i)} cy={yOf(p.trip_count)} r={3} fill="#2563eb" />
+                              {i % labelStep === 0 && (
+                                <text x={xOf(i)} y={PT + iH + 14} textAnchor="middle" fill="#6b7280">{p.month.slice(2)}</text>
+                              )}
+                            </g>
+                          ))}
+                        </svg>
+                      </div>
+                    </>
+                  )
+                })()}
+
+                {/* Heatmap cliente × ruta */}
+                {heatmapLoading && <p className="subtitle">Cargando mapa de calor...</p>}
+                {heatmapData && heatmapData.routes.length > 0 && (() => {
+                  const { routes, clients, matrix } = heatmapData
+                  const maxVal = Math.max(...matrix.flatMap(row => row))
+                  const CELL_W = 90
+                  const CELL_H = 40
+                  const LEFT_PAD = 110
+                  const TOP_PAD = 140
+                  const W = LEFT_PAD + routes.length * CELL_W + 20
+                  const H = TOP_PAD + clients.length * CELL_H + 20
+                  const heatColor = (v) => {
+                    if (v === 0) return '#f9fafb'
+                    const t = v / maxVal
+                    const r = Math.round(239 - t * (239 - 37))
+                    const g = Math.round(246 - t * (246 - 99))
+                    const b = Math.round(255 - t * (255 - 235))
+                    return `rgb(${r},${g},${b})`
+                  }
+                  return (
+                    <>
+                      <h3 style={{ marginBottom: 4, marginTop: 20 }}>Mapa de calor: cliente × ruta (top frecuencias)</h3>
+                      <p className="subtitle">Intensidad = número de viajes. Filas = clientId · Columnas = ruta más usada.</p>
+                      <div style={{ overflowX: 'auto' }}>
+                        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block', fontFamily: 'system-ui, sans-serif' }}>
+                          {/* Encabezados de columna (rutas) — rotados 55° */}
+                          {routes.map((route, j) => {
+                            const shortR = route.length > 22 ? route.slice(0, 21) + '…' : route
+                            const cx = LEFT_PAD + j * CELL_W + CELL_W / 2
+                            return (
+                              <text key={route} x={cx} y={TOP_PAD - 10} textAnchor="end"
+                                transform={`rotate(-50, ${cx}, ${TOP_PAD - 10})`}
+                                fill="#374151" fontSize={12} fontWeight={500}>
+                                {shortR}
+                              </text>
+                            )
+                          })}
+                          {/* Filas (clientes) */}
+                          {clients.map((client, i) => (
+                            <g key={client}>
+                              <text x={LEFT_PAD - 8} y={TOP_PAD + i * CELL_H + CELL_H / 2 + 5}
+                                textAnchor="end" fill="#374151" fontSize={13} fontWeight={600}>
+                                {client}
+                              </text>
+                              {routes.map((route, j) => {
+                                const v = matrix[i]?.[j] ?? 0
+                                const cx = LEFT_PAD + j * CELL_W
+                                const cy = TOP_PAD + i * CELL_H
+                                return (
+                                  <g key={route}>
+                                    <rect x={cx} y={cy} width={CELL_W - 3} height={CELL_H - 3}
+                                      rx={4} fill={heatColor(v)} stroke="#e5e7eb" strokeWidth={0.8} />
+                                    {v > 0 && (
+                                      <text x={cx + CELL_W / 2} y={cy + CELL_H / 2 + 5}
+                                        textAnchor="middle" fill={v / maxVal > 0.45 ? '#fff' : '#374151'}
+                                        fontSize={13} fontWeight={700}>
+                                        {v}
+                                      </text>
+                                    )}
+                                  </g>
+                                )
+                              })}
+                            </g>
+                          ))}
+                        </svg>
+                      </div>
+                    </>
+                  )
+                })()}
+
+                {/* Tabla de métricas */}
+                <h3 style={{ marginTop: 20 }}>Detalle de rutas</h3>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Ruta</th>
+                        <th>Viajes</th>
+                        <th>Dist. prom. (km)</th>
+                        <th>Duración prom. (h)</th>
+                        <th>Unidades</th>
+                        <th>Clientes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fleetSummary.top_routes.map((r, i) => (
+                        <tr key={r.route_label}>
+                          <td>{i + 1}</td>
+                          <td>{r.route_label}</td>
+                          <td><strong>{r.trip_count}</strong></td>
+                          <td>{r.avg_distance_km ?? '—'}</td>
+                          <td>{r.avg_duration_hours ?? '—'}</td>
+                          <td>{r.unique_assets ?? '—'}</td>
+                          <td>{r.unique_clients ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB: CLIENTE ── */}
+        {summaryTab === 'client' && (
+          <div style={{ marginTop: 16 }}>
+            <div className="toolbar">
+              <label className="inline-label">
+                <span>clientId</span>
+                <input
+                  type="number"
+                  value={summaryClientId}
+                  onChange={(e) => setSummaryClientId(e.target.value)}
+                  placeholder="Ej. 1663"
+                />
+              </label>
+              <button
+                onClick={() => {
+                  setClientSummary(null)
+                  setClientAssets([])
+                  setSelectedAssets(new Set())
+                  setAssetSearch('')
+                  loadClientAssets(summaryClientId)
+                  loadClientSummary(summaryClientId, new Set())
+                }}
+                disabled={clientSummaryLoading || !summaryClientId.trim()}
+              >
+                {clientSummaryLoading ? 'Cargando...' : 'Cargar'}
+              </button>
+            </div>
+
+            {/* Selector de assets */}
+            {clientAssets.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <p className="subtitle" style={{ margin: 0 }}>
+                    <strong>Filtrar por unidad (asset):</strong>{' '}
+                    {selectedAssets.size === 0
+                      ? `Top ${clientAssets.length} de ${clientAssetsTotal} totales`
+                      : `${selectedAssets.size} seleccionado${selectedAssets.size > 1 ? 's' : ''} · ${clientAssetsTotal} totales`}
+                  </p>
+                  <input
+                    type="text"
+                    placeholder="Buscar asset ID…"
+                    value={assetSearch}
+                    onChange={(e) => setAssetSearch(e.target.value)}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: 6,
+                      border: '1px solid #d1d5db',
+                      fontSize: 12,
+                      width: 160,
+                      outline: 'none',
+                    }}
+                  />
+                  {assetSearch && (
+                    <button
+                      onClick={() => setAssetSearch('')}
+                      style={{ fontSize: 11, background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}
+                    >
+                      ✕ Limpiar
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  <button
+                    onClick={() => {
+                      setSelectedAssets(new Set())
+                      loadClientSummary(summaryClientId, new Set())
+                    }}
+                    style={{
+                      padding: '4px 12px',
+                      borderRadius: 20,
+                      border: '1.5px solid #d1d5db',
+                      background: selectedAssets.size === 0 ? '#1d4ed8' : '#f3f4f6',
+                      color: selectedAssets.size === 0 ? '#fff' : '#374151',
+                      fontWeight: selectedAssets.size === 0 ? 700 : 400,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                    }}
+                  >
+                    Todos ({clientAssets.length})
+                  </button>
+                  {clientAssets
+                    .filter((a) => !assetSearch || String(a.asset_id).includes(assetSearch.trim()))
+                    .map((a) => {
+                      const active = selectedAssets.has(a.asset_id)
+                      return (
+                        <button
+                          key={a.asset_id}
+                          onClick={() => {
+                            const next = new Set(selectedAssets)
+                            if (next.has(a.asset_id)) next.delete(a.asset_id)
+                            else next.add(a.asset_id)
+                            setSelectedAssets(next)
+                            loadClientSummary(summaryClientId, next)
+                          }}
+                          title={`${a.trip_count} registros`}
+                          style={{
+                            padding: '4px 12px',
+                            borderRadius: 20,
+                            border: `1.5px solid ${active ? '#2563eb' : '#d1d5db'}`,
+                            background: active ? '#dbeafe' : '#f9fafb',
+                            color: active ? '#1d4ed8' : '#374151',
+                            fontWeight: active ? 700 : 400,
+                            cursor: 'pointer',
+                            fontSize: 12,
+                          }}
+                        >
+                          {a.asset_id}
+                          <span style={{ marginLeft: 4, fontSize: 10, color: active ? '#1d4ed8' : '#9ca3af' }}>
+                            ({a.trip_count.toLocaleString()})
+                          </span>
+                        </button>
+                      )
+                    })}
+                  {assetSearch && clientAssets.filter((a) => String(a.asset_id).includes(assetSearch.trim())).length === 0 && (
+                    <span style={{ fontSize: 12, color: '#9ca3af', alignSelf: 'center' }}>Sin coincidencias</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {clientSummary?.error && <p className="subtitle warning">{clientSummary.error}</p>}
+
+            {clientSummary && !clientSummary.error && (
+              <>
+                {/* Stats cards */}
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+                  {[
+                    { label: 'Viajes totales', value: clientSummary.stats.total_trips?.toLocaleString() },
+                    { label: 'Rutas únicas', value: clientSummary.stats.unique_routes?.toLocaleString() },
+                    { label: 'Unidades activas', value: clientSummary.stats.unique_assets?.toLocaleString() },
+                  ].map(({ label, value }) => (
+                    <div key={label} style={{
+                      background: '#f0fdf4',
+                      border: '1px solid #bbf7d0',
+                      borderRadius: 8,
+                      padding: '12px 20px',
+                      minWidth: 130,
+                      textAlign: 'center',
+                    }}>
+                      <div style={{ fontSize: 26, fontWeight: 700, color: '#15803d' }}>{value ?? '—'}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Gráfico de barras horizontal */}
+                {clientSummary.top_routes.length > 0 && (() => {
+                  const maxCount = clientSummary.top_routes[0].trip_count
+                  const BAR_H = 22, GAP = 6, LABEL_W = 260, BAR_MAX_W = 300, COUNT_W = 50
+                  const W = LABEL_W + BAR_MAX_W + COUNT_W + 24
+                  const H = clientSummary.top_routes.length * (BAR_H + GAP) + 30
+                  return (
+                    <>
+                      <h3 style={{ marginBottom: 8 }}>
+                        Top rutas — clientId {clientSummary.client_id}
+                        {selectedAssets.size > 0 && (
+                          <span style={{ fontWeight: 400, fontSize: 13, color: '#6b7280', marginLeft: 8 }}>
+                            · assets: {[...selectedAssets].join(', ')}
+                          </span>
+                        )}
+                      </h3>
+                      <div style={{ overflowX: 'auto' }}>
+                        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block', fontFamily: 'system-ui, sans-serif', fontSize: 11 }}>
+                          {clientSummary.top_routes.map((r, i) => {
+                            const barW = maxCount > 0 ? (r.trip_count / maxCount) * BAR_MAX_W : 0
+                            const y = i * (BAR_H + GAP) + 20
+                            const shortLabel = r.route_label.length > 38 ? r.route_label.slice(0, 37) + '…' : r.route_label
+                            return (
+                              <g key={r.route_label}>
+                                <text x={LABEL_W - 6} y={y + BAR_H / 2 + 4} textAnchor="end" fill="#374151" fontSize={11}>{shortLabel}</text>
+                                <rect x={LABEL_W} y={y} width={Math.max(barW, 2)} height={BAR_H} rx={3} fill={i === 0 ? '#16a34a' : i < 3 ? '#22c55e' : '#86efac'} />
+                                <text x={LABEL_W + barW + 6} y={y + BAR_H / 2 + 4} fill="#374151" fontSize={11}>{r.trip_count}</text>
+                              </g>
+                            )
+                          })}
+                          <line x1={LABEL_W} y1={10} x2={LABEL_W} y2={H} stroke="#d1d5db" strokeWidth={1} />
+                        </svg>
+                      </div>
+                    </>
+                  )
+                })()}
+
+                {/* Timeline mensual */}
+                {clientSummary.monthly_counts.length > 1 && (() => {
+                  const pts = clientSummary.monthly_counts
+                  const maxV = Math.max(...pts.map(p => p.trip_count))
+                  const W = 680, H = 120
+                  const PL = 40, PR = 16, PT = 10, PB = 30
+                  const iW = W - PL - PR, iH = H - PT - PB
+                  const xOf = i => PL + (i / (pts.length - 1)) * iW
+                  const yOf = v => PT + iH - (v / maxV) * iH
+                  const polyline = pts.map((p, i) => `${xOf(i).toFixed(1)},${yOf(p.trip_count).toFixed(1)}`).join(' ')
+                  const labelStep = Math.ceil(pts.length / 8)
+                  return (
+                    <>
+                      <h3 style={{ marginBottom: 4, marginTop: 20 }}>
+                        Viajes por mes
+                        {selectedAssets.size > 0 && (
+                          <span style={{ fontWeight: 400, fontSize: 13, color: '#6b7280', marginLeft: 8 }}>
+                            · {selectedAssets.size} asset{selectedAssets.size > 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </h3>
+                      <div style={{ overflowX: 'auto' }}>
+                        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block', fontFamily: 'monospace', fontSize: 10 }}>
+                          <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#555" strokeWidth={1} />
+                          <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="#555" strokeWidth={1} />
+                          {[0, Math.round(maxV / 2), maxV].map(v => (
+                            <g key={v}>
+                              <line x1={PL - 4} y1={yOf(v)} x2={PL} y2={yOf(v)} stroke="#888" strokeWidth={1} />
+                              <text x={PL - 6} y={yOf(v) + 3} textAnchor="end" fill="#888">{v}</text>
+                            </g>
+                          ))}
+                          <polyline points={polyline} fill="none" stroke="#16a34a" strokeWidth={2} />
+                          {pts.map((p, i) => (
+                            <g key={p.month}>
+                              <circle cx={xOf(i)} cy={yOf(p.trip_count)} r={3} fill="#16a34a" />
+                              {i % labelStep === 0 && (
+                                <text x={xOf(i)} y={PT + iH + 14} textAnchor="middle" fill="#6b7280">{p.month.slice(2)}</text>
+                              )}
+                            </g>
+                          ))}
+                        </svg>
+                      </div>
+                    </>
+                  )
+                })()}
+
+                {/* Análisis de zonas sin cobertura GPS */}
+                <div style={{ marginTop: 28, borderTop: '1px solid #e5e7eb', paddingTop: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <h3 style={{ margin: 0 }}>Zonas sin cobertura GPS (resumen de flota)</h3>
+
+                    {/* Botón principal: carga caché si existe, calcula si no */}
+                    {!coverageData && (
+                      <button
+                        onClick={() => loadCoverageData(20, false)}
+                        disabled={coverageLoading || !summaryClientId.trim()}
+                        style={{ fontSize: 13 }}
+                      >
+                        {coverageLoading
+                          ? 'Cargando…'
+                          : coverageCacheStatus?.exists
+                            ? 'Cargar desde caché'
+                            : 'Calcular análisis (top 20 assets)'}
+                      </button>
+                    )}
+
+                    {/* Botón recalcular — solo visible cuando ya hay datos */}
+                    {coverageData && !coverageLoading && (
+                      <button
+                        onClick={() => loadCoverageData(20, true)}
+                        disabled={coverageLoading}
+                        style={{ fontSize: 13, background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1' }}
+                        title="Vuelve a consultar todos los assets y actualiza el caché"
+                      >
+                        ↺ Recalcular
+                      </button>
+                    )}
+
+                    {coverageData && !coverageLoading && (
+                      <button onClick={openCoverageMapWindow} style={{ fontSize: 13 }}>
+                        🗺 Ver mapa ↗
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Indicador de caché */}
+                  {coverageCacheStatus && !coverageLoading && (
+                    <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
+                      {coverageCacheStatus.exists
+                        ? `Caché disponible · última actualización: ${coverageCacheStatus.cached_at ? new Date(coverageCacheStatus.cached_at).toLocaleString('es-MX') : '—'}${coverageCacheStatus.stale ? ' · ⚠ caché desactualizado (DuckDB más reciente)' : ''}`
+                        : 'Sin caché — se calculará al solicitar'}
+                    </p>
+                  )}
+                  {coverageData?.from_cache === false && !coverageLoading && (
+                    <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
+                      Recién calculado y guardado en caché ·{' '}
+                      {coverageData.cached_at ? new Date(coverageData.cached_at).toLocaleString('es-MX') : ''}
+                    </p>
+                  )}
+
+                  {coverageLoading && (
+                    <p className="subtitle" style={{ color: '#6b7280' }}>
+                      {coverageCacheStatus?.exists
+                        ? 'Cargando datos del caché…'
+                        : `Calculando cobertura para clientId ${summaryClientId} — puede tardar ~30 s…`}
+                    </p>
+                  )}
+
+                  {coverageData && !coverageLoading && (
+                    <>
+                      {coverageData.error && (
+                        <p style={{ color: '#dc2626', fontSize: 13 }}>{coverageData.error}</p>
+                      )}
+
+                      {/* Tarjetas de resumen */}
+                      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
+                        {[
+                          {
+                            label: 'Assets analizados',
+                            value: coverageData.total_assets_analyzed ?? 0,
+                            color: '#1d4ed8',
+                            bg: '#eff6ff',
+                          },
+                          {
+                            label: 'Zonas sin cobertura',
+                            value: coverageData.structural_zones ?? 0,
+                            color: '#dc2626',
+                            bg: '#fef2f2',
+                            note: '≥2 assets afectados',
+                          },
+                          {
+                            label: 'Eventos aislados',
+                            value: coverageData.isolated_events ?? 0,
+                            color: '#d97706',
+                            bg: '#fffbeb',
+                            note: '1 asset afectado',
+                          },
+                          {
+                            label: 'Puntos sin GPS',
+                            value: (coverageData.total_lost_points ?? 0).toLocaleString(),
+                            color: '#7c3aed',
+                            bg: '#f5f3ff',
+                          },
+                        ].map((c) => (
+                          <div
+                            key={c.label}
+                            style={{
+                              background: c.bg,
+                              border: `1px solid ${c.color}33`,
+                              borderRadius: 8,
+                              padding: '10px 16px',
+                              minWidth: 140,
+                            }}
+                          >
+                            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 2 }}>{c.label}</div>
+                            <div style={{ fontSize: 24, fontWeight: 700, color: c.color }}>{c.value}</div>
+                            {c.note && <div style={{ fontSize: 11, color: '#9ca3af' }}>{c.note}</div>}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Tabla de hotspots */}
+                      {coverageData.hotspots && coverageData.hotspots.length > 0 && (
+                        <>
+                          <h4 style={{ margin: '0 0 8px', fontSize: 14 }}>
+                            Zonas más afectadas ({coverageData.total_hotspots} total)
+                          </h4>
+                          <div className="table-wrap">
+                            <table style={{ fontSize: 13 }}>
+                              <thead>
+                                <tr>
+                                  <th>#</th>
+                                  <th>Latitud</th>
+                                  <th>Longitud</th>
+                                  <th>Assets afectados</th>
+                                  <th>Eventos</th>
+                                  <th>Categoría</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {coverageData.hotspots.slice(0, 20).map((h, i) => (
+                                  <tr key={i}>
+                                    <td>{i + 1}</td>
+                                    <td>{h.lat?.toFixed(4)}</td>
+                                    <td>{h.lon?.toFixed(4)}</td>
+                                    <td>
+                                      <strong style={{ color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706' }}>
+                                        {h.asset_count}
+                                      </strong>
+                                    </td>
+                                    <td>{h.event_count}</td>
+                                    <td>
+                                      <span
+                                        style={{
+                                          background: h.category === 'zona_sin_cobertura' ? '#fef2f2' : '#fffbeb',
+                                          color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706',
+                                          border: `1px solid ${h.category === 'zona_sin_cobertura' ? '#fca5a5' : '#fcd34d'}`,
+                                          borderRadius: 4,
+                                          padding: '1px 6px',
+                                          fontSize: 11,
+                                        }}
+                                      >
+                                        {h.category === 'zona_sin_cobertura' ? 'Sin cobertura' : 'Evento aislado'}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </>
+                      )}
+
+                      {coverageData.errors && coverageData.errors.length > 0 && (
+                        <details style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+                          <summary>{coverageData.errors.length} asset(s) con errores al procesar</summary>
+                          <ul style={{ marginTop: 4 }}>
+                            {coverageData.errors.map((e, i) => <li key={i}>{e}</li>)}
+                          </ul>
+                        </details>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Tabla */}
+                <h3 style={{ marginTop: 20 }}>Detalle de rutas</h3>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Ruta</th>
+                        <th>Viajes</th>
+                        <th>Dist. prom. (km)</th>
+                        <th>Duración prom. (h)</th>
+                        <th>Unidades</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {clientSummary.top_routes.map((r, i) => (
+                        <tr key={r.route_label}>
+                          <td>{i + 1}</td>
+                          <td>{r.route_label}</td>
+                          <td><strong>{r.trip_count}</strong></td>
+                          <td>{r.avg_distance_km ?? '—'}</td>
+                          <td>{r.avg_duration_hours ?? '—'}</td>
+                          <td>{r.unique_assets ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="card">
         <h2>1) Estado backend / snapshot</h2>
         <div className="toolbar">
           <button onClick={loadSnapshotStatus} disabled={snapshotLoading}>
@@ -3310,6 +4522,22 @@ function App() {
           <button onClick={detectRoutes} disabled={routeLoading}>
             {routeLoading ? 'Analizando...' : 'Detectar rutas'}
           </button>
+          {routeDetection?.complete_routes?.length > 0 && (
+            <label className="inline-label">
+              <span>Ver ruta</span>
+              <select
+                value={selectedMapRouteIndex ?? ''}
+                onChange={(event) => setSelectedMapRouteIndex(event.target.value === '' ? null : Number(event.target.value))}
+              >
+                <option value="">Todas ({routeDetection.complete_routes.length})</option>
+                {routeDetection.complete_routes.map((route, i) => (
+                  <option key={i} value={i}>
+                    #{i + 1} · {formatTimestamp(route.start_timestamp)?.slice(0, 10) ?? '—'} · {Number(route.distance_km).toFixed(1)} km
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button onClick={openRouteMapWindow} disabled={routeLoading || !routeDetection}>
             Ver mapa ruta
           </button>
@@ -3341,23 +4569,29 @@ function App() {
                     <th>Total eventos</th>
                     <th>Tipos únicos</th>
                     <th>Puntos GPS</th>
-                    <th>Brecha mínima (s)</th>
+                    <th title="Eventos sin coordenadas GPS (sin conectividad)">Sin GPS ⚡</th>
                     <th>Match carreteras</th>
                     <th>Carreteras detectadas</th>
                     <th>Ruta ML</th>
                     <th>Confianza ML</th>
+                    <th>Detalle</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {routeDetection.complete_routes.map((route) => {
+                  {routeDetection.complete_routes.map((route, routeIndex) => {
                     const mlPrediction = mlPredictionsByRoute[getRouteKey(route)]
-                    const routeGapAnalysis = buildRouteGapAnalysis(getRouteIntervalRecords(route))
                     const routeRoadLabels = getRouteRoadLabels(route)
                     const mlConfidenceLabel = Number.isFinite(Number(mlPrediction?.confidence))
                       ? `${(Number(mlPrediction.confidence) * 100).toFixed(1)}%`
                       : ''
+                    const isExpanded = expandedRouteIndex === routeIndex
                     return (
-                    <tr key={`route-${route.start_index}-${route.end_index}-${route.start_timestamp || 'na'}`}>
+                    <tr
+                      key={`route-${route.start_index}-${route.end_index}-${route.start_timestamp || 'na'}`}
+                      onClick={() => setExpandedRouteIndex(isExpanded ? null : routeIndex)}
+                      style={{ cursor: 'pointer', background: isExpanded ? '#eff6ff' : undefined }}
+                      title="Clic para ver puntos de esta ruta"
+                    >
                       <td>{route.is_primary ? 'SI' : ''}</td>
                       <td>{route.start_timestamp || ''}</td>
                       <td>{route.end_timestamp || ''}</td>
@@ -3366,7 +4600,9 @@ function App() {
                       <td>{route.total_events}</td>
                       <td>{route.unique_event_types}</td>
                       <td>{route.total_gps_points}</td>
-                      <td>{routeGapAnalysis.intervals.length > 0 ? routeGapAnalysis.minGapSeconds.toFixed(1) : ''}</td>
+                      <td style={{ color: (route.total_events - route.total_gps_points) > 0 ? '#ea580c' : undefined, fontWeight: (route.total_events - route.total_gps_points) > 0 ? 600 : undefined }}>
+                        {route.total_events - route.total_gps_points}
+                      </td>
                       <td>
                         {route.road_match_ratio == null
                           ? '0.0%'
@@ -3375,19 +4611,23 @@ function App() {
                       <td>{routeRoadLabels.join(' | ')}</td>
                       <td>{mlPrediction?.predicted_route || (mlPrediction?.error ? 'N/A' : '')}</td>
                       <td>{mlConfidenceLabel || (mlPrediction?.error ? 'N/A' : '')}</td>
+                      <td>{isExpanded ? '▲ Ocultar' : '▼ Ver puntos'}</td>
                     </tr>
                     )
                   })}
                   {routeDetection.complete_routes.length === 0 && (
                     <tr>
-                      <td colSpan={13}>No se detectaron rutas completas 519→520 para este asset/client.</td>
+                      <td colSpan={14}>No se detectaron rutas completas 519→520 para este asset/client.</td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
 
-            <h3>Puntos de cada ruta completa (GPS/Server Timestamp)</h3>
+            <h3>Puntos de la ruta seleccionada</h3>
+            {expandedRouteIndex === null ? (
+              <p className="subtitle">Haz clic en una fila de la tabla para ver los puntos de esa ruta.</p>
+            ) : (
             <div className="toolbar">
               <label className="inline-label">
                 <span>Filtro rápido</span>
@@ -3411,25 +4651,27 @@ function App() {
                 </label>
               )}
             </div>
-            {routeDetection.complete_routes.map((route, routeIndex) => (
-              <div
-                className="route-points-block"
-                key={`route-points-${route.start_index}-${route.end_index}-${route.start_timestamp || 'na'}`}
-              >
-                {(() => {
-                  const intervalRecords = getRouteIntervalRecords(route)
-                  const estimatedGpsMetadataBySourceIndex = buildEstimatedGpsMetadataBySourceIndex(route)
-                  const visibleIntervalRecords = filterIntervalRecords(route, intervalRecords, estimatedGpsMetadataBySourceIndex)
-                  const mlPrediction = mlPredictionsByRoute[getRouteKey(route)]
-                  const mlClassRoadsIndex = buildMlClassRoadsIndex()
-                  const routeRoadLabels = getRouteRoadLabels(route)
-                  const mlPredictedRoads = mlPrediction?.predicted_route
-                    ? (mlClassRoadsIndex[mlPrediction.predicted_route] || [])
-                    : []
-                  const gapAnalysis = buildRouteGapAnalysis(intervalRecords)
-                  const chartIntervals = gapAnalysis.intervals.slice(0, 240)
-                  return (
-                    <>
+            )}
+            {expandedRouteIndex !== null && (() => {
+              const route = routeDetection.complete_routes[expandedRouteIndex]
+              const routeIndex = expandedRouteIndex
+              if (!route) return null
+              const intervalRecords = getRouteIntervalRecords(route)
+              const estimatedGpsMetadataBySourceIndex = buildEstimatedGpsMetadataBySourceIndex(route)
+              const visibleIntervalRecords = filterIntervalRecords(route, intervalRecords, estimatedGpsMetadataBySourceIndex)
+              const mlPrediction = mlPredictionsByRoute[getRouteKey(route)]
+              const mlClassRoadsIndex = buildMlClassRoadsIndex()
+              const routeRoadLabels = getRouteRoadLabels(route)
+              const mlPredictedRoads = mlPrediction?.predicted_route
+                ? (mlClassRoadsIndex[mlPrediction.predicted_route] || [])
+                : []
+              const gapAnalysis = buildRouteGapAnalysis(intervalRecords)
+              const chartIntervals = gapAnalysis.intervals.slice(0, 240)
+              return (
+                <div
+                  className="route-points-block"
+                  key={`route-points-${route.start_index}-${route.end_index}-${route.start_timestamp || 'na'}`}
+                >
                       <p className="subtitle">
                         Ruta #{routeIndex + 1}{route.is_primary ? ' · PRINCIPAL (mejor match de carreteras)' : ''} · Inicio: {formatTimestamp(route.start_timestamp)} · Fin: {formatTimestamp(route.end_timestamp)} ·
                         Registros entre eventos inicio/fin: {intervalRecords.length} ·
@@ -3451,8 +4693,11 @@ function App() {
                         {mlPredictedRoads.length > 0 ? mlPredictedRoads.slice(0, 8).join(' | ') : 'sin mapeo todavía'}
                       </p>
                       <div className="toolbar">
-                        <button onClick={() => openCompleteRouteIntervalMap(route, routeIndex)}>
-                          Ver mapa de esta ruta completa
+                        <button onClick={() => {
+                          const r = routeDetection?.complete_routes?.[expandedRouteIndex]
+                          if (r != null) openCompleteRouteIntervalMap(r, expandedRouteIndex)
+                        }}>
+                          Ver mapa de esta ruta completa (#{(expandedRouteIndex ?? 0) + 1})
                         </button>
                         <button onClick={() => openMlPredictedRouteMapWindow(route, routeIndex)}>
                           Ver mapa ruta ML
@@ -3577,11 +4822,9 @@ function App() {
                         </table>
                       </div>
 
-                    </>
-                  )
-                })()}
               </div>
-            ))}
+            )
+          })()}
             {routeDetection.complete_routes.length === 0 && (
               <p className="subtitle">No hay puntos de rutas completas para mostrar.</p>
             )}
@@ -3657,7 +4900,12 @@ function App() {
 
             {signalLossData.segments.length > 0 && (
               <>
-                <h3>Segmentos sin señal detectados</h3>
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  Segmentos sin señal detectados
+                  <button style={{ fontSize: 12, padding: '3px 10px' }} onClick={openSignalLossCoverageMap}>
+                    🗺 Ver mapa de cobertura ↗
+                  </button>
+                </h3>
                 <div className="table-scroll">
                   <table>
                     <thead>
@@ -3913,6 +5161,64 @@ function App() {
               <p className="subtitle success">No se detectaron paradas significativas para este asset/client.</p>
             )}
 
+            {/* Resumen por categoría */}
+            {stopsData.category_summary?.length > 0 && (() => {
+              const CAT_COLORS = {
+                gasolinera: '#f59e0b',
+                hotel: '#8b5cf6',
+                restaurante: '#22c55e',
+                tienda_conveniencia: '#3b82f6',
+                farmacia: '#06b6d4',
+                hospital: '#0891b2',
+                taller_mecanico: '#78716c',
+                terminal_carga: '#6366f1',
+                motor_apagado: '#64748b',
+                ralenti: '#94a3b8',
+                parada_no_autorizada: '#ef4444',
+                estacionamiento_prolongado: '#f97316',
+                pernocta_fuera_de_base: '#dc2626',
+                parada_larga: '#b45309',
+                parada_en_geocerca: '#0ea5e9',
+                punto_de_control: '#10b981',
+                entrega: '#10b981',
+                en_carretera: '#78716c',
+                parada_en_carretera: '#94a3b8',
+              }
+              return (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8, fontWeight: 600 }}>
+                    Distribución por categoría
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {stopsData.category_summary.map((c) => {
+                      const color = CAT_COLORS[c.category] ?? '#94a3b8'
+                      return (
+                        <div
+                          key={c.category}
+                          style={{
+                            background: color + '18',
+                            border: `1px solid ${color}55`,
+                            borderRadius: 8,
+                            padding: '6px 12px',
+                            minWidth: 110,
+                            textAlign: 'center',
+                          }}
+                        >
+                          <div style={{ fontSize: 18, fontWeight: 700, color }}>{c.count}</div>
+                          <div style={{ fontSize: 11, color: '#374151', fontWeight: 600 }}>
+                            {c.category.replace(/_/g, ' ')}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#9ca3af' }}>
+                            {c.total_minutes.toFixed(0)} min
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })()}
+
             {stopsData.stops.length > 0 && (
               <div className="table-scroll">
                 <table>
@@ -3937,14 +5243,20 @@ function App() {
                         hotel: '#8b5cf6',
                         restaurante: '#22c55e',
                         tienda_conveniencia: '#3b82f6',
+                        farmacia: '#06b6d4',
+                        hospital: '#0891b2',
+                        taller_mecanico: '#78716c',
+                        terminal_carga: '#6366f1',
                         motor_apagado: '#64748b',
                         ralenti: '#94a3b8',
                         parada_no_autorizada: '#ef4444',
                         estacionamiento_prolongado: '#f97316',
                         pernocta_fuera_de_base: '#dc2626',
+                        parada_larga: '#b45309',
                         parada_en_geocerca: '#0ea5e9',
                         punto_de_control: '#10b981',
                         entrega: '#10b981',
+                        en_carretera: '#78716c',
                         parada_en_carretera: '#94a3b8',
                       }
                       const color = catColors[s.final_category] ?? '#94a3b8'

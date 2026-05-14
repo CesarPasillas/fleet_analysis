@@ -19,6 +19,7 @@ backend/.env
 backend/data/fleet_analytics.duckdb
 backend/data/pos_parquet/
 backend/data/*.parquet
+backend/data/route_cache/
 data/
 
 # Archivos temporales / OS

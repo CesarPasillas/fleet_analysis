@@ -247,6 +247,12 @@ class VehicleStop(BaseModel):
     confidence: str
 
 
+class StopCategorySummary(BaseModel):
+    category: str
+    count: int
+    total_minutes: float
+
+
 class StopsResponse(BaseModel):
     asset_id: int
     client_id: int
@@ -255,6 +261,7 @@ class StopsResponse(BaseModel):
     total_stop_minutes: float
     min_stop_minutes: float
     use_geo: bool
+    category_summary: list[StopCategorySummary] = []
     stops: list[VehicleStop]
     error: str | None = None
 
