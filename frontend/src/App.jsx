@@ -25,7 +25,6 @@ function App() {
   const [carreterasCatalogLoading, setCarreterasCatalogLoading] = useState(false)
   const [selectedCarretera, setSelectedCarretera] = useState('ALL')
   const [snapshotStatus, setSnapshotStatus] = useState(null)
-  const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [rowsData, setRowsData] = useState(null)
   const [rowsLoading, setRowsLoading] = useState(false)
   const [pageSize, setPageSize] = useState(100)
@@ -65,8 +64,6 @@ function App() {
   const [clientSummary, setClientSummary] = useState(null)
   const [clientSummaryLoading, setClientSummaryLoading] = useState(false)
   const [summaryClientId, setSummaryClientId] = useState('')
-  const [heatmapData, setHeatmapData] = useState(null)
-  const [heatmapLoading, setHeatmapLoading] = useState(false)
   const [clientAssets, setClientAssets] = useState([])
   const [clientAssetsTotal, setClientAssetsTotal] = useState(0)
   const [selectedAssets, setSelectedAssets] = useState(new Set())
@@ -121,15 +118,6 @@ function App() {
     checkCoverageCache(id)
   }
 
-  const loadHeatmap = async () => {
-    setHeatmapLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/routes/fleet-heatmap?limit_routes=12&limit_clients=10`)
-      if (res.ok) setHeatmapData(await res.json())
-    } finally {
-      setHeatmapLoading(false)
-    }
-  }
 
   const loadCoverageData = async (limitAssets = 20, forceRefresh = false) => {
     const id = summaryClientId.trim()
@@ -150,14 +138,21 @@ function App() {
   }
 
   const openCoverageMapWindow = () => {
-    if (!coverageData || !Array.isArray(coverageData.hotspots)) return
+    if (!coverageData || !Array.isArray(coverageData.hotspots)) {
+      setError('No hay datos de cobertura para mostrar.')
+      return
+    }
     const hotspots = coverageData.hotspots
     if (hotspots.length === 0) {
+      setError('No se encontraron hotspots de cobertura para mapear.')
       return
     }
 
     const mapWindow = window.open('', '_blank', 'width=1300,height=850')
-    if (!mapWindow) return
+    if (!mapWindow) {
+      setError('El navegador bloqueó la ventana emergente. Permite pop-ups para este sitio y vuelve a intentarlo.')
+      return
+    }
 
     const title = `Cobertura GPS — clientId=${coverageData.client_id} · ${coverageData.total_assets_analyzed} assets`
     const safeHotspots = JSON.stringify(hotspots).replaceAll('</', String.raw`<\/`)
@@ -304,7 +299,6 @@ function App() {
   }
 
   const loadSnapshotStatus = async () => {
-    setSnapshotLoading(true)
     setError('')
     try {
       const response = await fetch(`${API_BASE}/data/snapshot/status`)
@@ -316,8 +310,6 @@ function App() {
       setSnapshotStatus(data)
     } catch (err) {
       setError(err.message)
-    } finally {
-      setSnapshotLoading(false)
     }
   }
 
@@ -507,13 +499,6 @@ function App() {
     loadRows(0, pageSize)
   }, [])
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      loadSnapshotStatus()
-    }, 30000)
-
-    return () => clearInterval(timer)
-  }, [])
 
   const sourceLabel = (() => {
     if (!snapshotStatus) {
@@ -3613,6 +3598,15 @@ function App() {
         <button
           type="button"
           role="tab"
+          aria-selected={activeMenu === 'resumen'}
+          className={`menu-tab ${activeMenu === 'resumen' ? 'active' : ''}`}
+          onClick={() => setActiveMenu('resumen')}
+        >
+          Resumen de Rutas
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={activeMenu === 'carreteras'}
           className={`menu-tab ${activeMenu === 'carreteras' ? 'active' : ''}`}
           onClick={() => setActiveMenu('carreteras')}
@@ -3630,11 +3624,9 @@ function App() {
         </button>
       </div>
 
-      {activeMenu === 'dashboard' && (
-        <>
-
-      <section className="card">
-        <h2>0) Resumen Ejecutivo de Rutas</h2>
+      {activeMenu === 'resumen' && (
+        <section className="card">
+          <h2>Resumen Ejecutivo de Rutas</h2>
         <p className="subtitle">
           Análisis agregado de rutas detectadas en la flota. Fuente: dataset histórico de entrenamiento ML.
         </p>
@@ -3670,7 +3662,7 @@ function App() {
           <div style={{ marginTop: 16 }}>
             {!fleetSummary && !fleetSummaryLoading && (
               <div className="toolbar">
-                <button onClick={() => { loadFleetSummary(); loadHeatmap() }}>
+                <button onClick={() => { loadFleetSummary() }}>
                   Cargar resumen de flota
                 </button>
               </div>
@@ -3776,75 +3768,6 @@ function App() {
                   )
                 })()}
 
-                {/* Heatmap cliente × ruta */}
-                {heatmapLoading && <p className="subtitle">Cargando mapa de calor...</p>}
-                {heatmapData && heatmapData.routes.length > 0 && (() => {
-                  const { routes, clients, matrix } = heatmapData
-                  const maxVal = Math.max(...matrix.flatMap(row => row))
-                  const CELL_W = 90
-                  const CELL_H = 40
-                  const LEFT_PAD = 110
-                  const TOP_PAD = 140
-                  const W = LEFT_PAD + routes.length * CELL_W + 20
-                  const H = TOP_PAD + clients.length * CELL_H + 20
-                  const heatColor = (v) => {
-                    if (v === 0) return '#f9fafb'
-                    const t = v / maxVal
-                    const r = Math.round(239 - t * (239 - 37))
-                    const g = Math.round(246 - t * (246 - 99))
-                    const b = Math.round(255 - t * (255 - 235))
-                    return `rgb(${r},${g},${b})`
-                  }
-                  return (
-                    <>
-                      <h3 style={{ marginBottom: 4, marginTop: 20 }}>Mapa de calor: cliente × ruta (top frecuencias)</h3>
-                      <p className="subtitle">Intensidad = número de viajes. Filas = clientId · Columnas = ruta más usada.</p>
-                      <div style={{ overflowX: 'auto' }}>
-                        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block', fontFamily: 'system-ui, sans-serif' }}>
-                          {/* Encabezados de columna (rutas) — rotados 55° */}
-                          {routes.map((route, j) => {
-                            const shortR = route.length > 22 ? route.slice(0, 21) + '…' : route
-                            const cx = LEFT_PAD + j * CELL_W + CELL_W / 2
-                            return (
-                              <text key={route} x={cx} y={TOP_PAD - 10} textAnchor="end"
-                                transform={`rotate(-50, ${cx}, ${TOP_PAD - 10})`}
-                                fill="#374151" fontSize={12} fontWeight={500}>
-                                {shortR}
-                              </text>
-                            )
-                          })}
-                          {/* Filas (clientes) */}
-                          {clients.map((client, i) => (
-                            <g key={client}>
-                              <text x={LEFT_PAD - 8} y={TOP_PAD + i * CELL_H + CELL_H / 2 + 5}
-                                textAnchor="end" fill="#374151" fontSize={13} fontWeight={600}>
-                                {client}
-                              </text>
-                              {routes.map((route, j) => {
-                                const v = matrix[i]?.[j] ?? 0
-                                const cx = LEFT_PAD + j * CELL_W
-                                const cy = TOP_PAD + i * CELL_H
-                                return (
-                                  <g key={route}>
-                                    <rect x={cx} y={cy} width={CELL_W - 3} height={CELL_H - 3}
-                                      rx={4} fill={heatColor(v)} stroke="#e5e7eb" strokeWidth={0.8} />
-                                    {v > 0 && (
-                                      <text x={cx + CELL_W / 2} y={cy + CELL_H / 2 + 5}
-                                        textAnchor="middle" fill={v / maxVal > 0.45 ? '#fff' : '#374151'}
-                                        fontSize={13} fontWeight={700}>
-                                        {v}
-                                      </text>
-                                    )}
-                                  </g>
-                                )
-                              })}
-                            </g>
-                          ))}
-                        </svg>
-                      </div>
-                    </>
-                  )
-                })()}
 
                 {/* Tabla de métricas */}
                 <h3 style={{ marginTop: 20 }}>Detalle de rutas</h3>
@@ -4109,184 +4032,6 @@ function App() {
                   )
                 })()}
 
-                {/* Análisis de zonas sin cobertura GPS */}
-                <div style={{ marginTop: 28, borderTop: '1px solid #e5e7eb', paddingTop: 20 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <h3 style={{ margin: 0 }}>Zonas sin cobertura GPS (resumen de flota)</h3>
-
-                    {/* Botón principal: carga caché si existe, calcula si no */}
-                    {!coverageData && (
-                      <button
-                        onClick={() => loadCoverageData(20, false)}
-                        disabled={coverageLoading || !summaryClientId.trim()}
-                        style={{ fontSize: 13 }}
-                      >
-                        {coverageLoading
-                          ? 'Cargando…'
-                          : coverageCacheStatus?.exists
-                            ? 'Cargar desde caché'
-                            : 'Calcular análisis (top 20 assets)'}
-                      </button>
-                    )}
-
-                    {/* Botón recalcular — solo visible cuando ya hay datos */}
-                    {coverageData && !coverageLoading && (
-                      <button
-                        onClick={() => loadCoverageData(20, true)}
-                        disabled={coverageLoading}
-                        style={{ fontSize: 13, background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1' }}
-                        title="Vuelve a consultar todos los assets y actualiza el caché"
-                      >
-                        ↺ Recalcular
-                      </button>
-                    )}
-
-                    {coverageData && !coverageLoading && (
-                      <button onClick={openCoverageMapWindow} style={{ fontSize: 13 }}>
-                        🗺 Ver mapa ↗
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Indicador de caché */}
-                  {coverageCacheStatus && !coverageLoading && (
-                    <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
-                      {coverageCacheStatus.exists
-                        ? `Caché disponible · última actualización: ${coverageCacheStatus.cached_at ? new Date(coverageCacheStatus.cached_at).toLocaleString('es-MX') : '—'}${coverageCacheStatus.stale ? ' · ⚠ caché desactualizado (DuckDB más reciente)' : ''}`
-                        : 'Sin caché — se calculará al solicitar'}
-                    </p>
-                  )}
-                  {coverageData?.from_cache === false && !coverageLoading && (
-                    <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
-                      Recién calculado y guardado en caché ·{' '}
-                      {coverageData.cached_at ? new Date(coverageData.cached_at).toLocaleString('es-MX') : ''}
-                    </p>
-                  )}
-
-                  {coverageLoading && (
-                    <p className="subtitle" style={{ color: '#6b7280' }}>
-                      {coverageCacheStatus?.exists
-                        ? 'Cargando datos del caché…'
-                        : `Calculando cobertura para clientId ${summaryClientId} — puede tardar ~30 s…`}
-                    </p>
-                  )}
-
-                  {coverageData && !coverageLoading && (
-                    <>
-                      {coverageData.error && (
-                        <p style={{ color: '#dc2626', fontSize: 13 }}>{coverageData.error}</p>
-                      )}
-
-                      {/* Tarjetas de resumen */}
-                      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
-                        {[
-                          {
-                            label: 'Assets analizados',
-                            value: coverageData.total_assets_analyzed ?? 0,
-                            color: '#1d4ed8',
-                            bg: '#eff6ff',
-                          },
-                          {
-                            label: 'Zonas sin cobertura',
-                            value: coverageData.structural_zones ?? 0,
-                            color: '#dc2626',
-                            bg: '#fef2f2',
-                            note: '≥2 assets afectados',
-                          },
-                          {
-                            label: 'Eventos aislados',
-                            value: coverageData.isolated_events ?? 0,
-                            color: '#d97706',
-                            bg: '#fffbeb',
-                            note: '1 asset afectado',
-                          },
-                          {
-                            label: 'Puntos sin GPS',
-                            value: (coverageData.total_lost_points ?? 0).toLocaleString(),
-                            color: '#7c3aed',
-                            bg: '#f5f3ff',
-                          },
-                        ].map((c) => (
-                          <div
-                            key={c.label}
-                            style={{
-                              background: c.bg,
-                              border: `1px solid ${c.color}33`,
-                              borderRadius: 8,
-                              padding: '10px 16px',
-                              minWidth: 140,
-                            }}
-                          >
-                            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 2 }}>{c.label}</div>
-                            <div style={{ fontSize: 24, fontWeight: 700, color: c.color }}>{c.value}</div>
-                            {c.note && <div style={{ fontSize: 11, color: '#9ca3af' }}>{c.note}</div>}
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Tabla de hotspots */}
-                      {coverageData.hotspots && coverageData.hotspots.length > 0 && (
-                        <>
-                          <h4 style={{ margin: '0 0 8px', fontSize: 14 }}>
-                            Zonas más afectadas ({coverageData.total_hotspots} total)
-                          </h4>
-                          <div className="table-wrap">
-                            <table style={{ fontSize: 13 }}>
-                              <thead>
-                                <tr>
-                                  <th>#</th>
-                                  <th>Latitud</th>
-                                  <th>Longitud</th>
-                                  <th>Assets afectados</th>
-                                  <th>Eventos</th>
-                                  <th>Categoría</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {coverageData.hotspots.slice(0, 20).map((h, i) => (
-                                  <tr key={i}>
-                                    <td>{i + 1}</td>
-                                    <td>{h.lat?.toFixed(4)}</td>
-                                    <td>{h.lon?.toFixed(4)}</td>
-                                    <td>
-                                      <strong style={{ color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706' }}>
-                                        {h.asset_count}
-                                      </strong>
-                                    </td>
-                                    <td>{h.event_count}</td>
-                                    <td>
-                                      <span
-                                        style={{
-                                          background: h.category === 'zona_sin_cobertura' ? '#fef2f2' : '#fffbeb',
-                                          color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706',
-                                          border: `1px solid ${h.category === 'zona_sin_cobertura' ? '#fca5a5' : '#fcd34d'}`,
-                                          borderRadius: 4,
-                                          padding: '1px 6px',
-                                          fontSize: 11,
-                                        }}
-                                      >
-                                        {h.category === 'zona_sin_cobertura' ? 'Sin cobertura' : 'Evento aislado'}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </>
-                      )}
-
-                      {coverageData.errors && coverageData.errors.length > 0 && (
-                        <details style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
-                          <summary>{coverageData.errors.length} asset(s) con errores al procesar</summary>
-                          <ul style={{ marginTop: 4 }}>
-                            {coverageData.errors.map((e, i) => <li key={i}>{e}</li>)}
-                          </ul>
-                        </details>
-                      )}
-                    </>
-                  )}
-                </div>
 
                 {/* Tabla */}
                 <h3 style={{ marginTop: 20 }}>Detalle de rutas</h3>
@@ -4320,16 +4065,13 @@ function App() {
             )}
           </div>
         )}
-      </section>
+        </section>
+      )}
 
+      {activeMenu === 'dashboard' && (
+        <>
       <section className="card">
         <h2>1) Estado backend / snapshot</h2>
-        <div className="toolbar">
-          <button onClick={loadSnapshotStatus} disabled={snapshotLoading}>
-            {snapshotLoading ? 'Consultando...' : 'Ver estado snapshot'}
-          </button>
-        </div>
-
         <p className="subtitle source-chip">{sourceLabel}</p>
 
         {snapshotStatus && (
@@ -4353,7 +4095,7 @@ function App() {
         <h2>2) Datos actuales (POS + EventType)</h2>
         <p className="subtitle source-chip">{sourceLabel}</p>
         <div className="toolbar">
-          <button onClick={() => loadRows(0, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter, eventTypeFilter2)} disabled={rowsLoading}>
+          <button onClick={() => { loadSnapshotStatus(); loadRows(0, pageSize, assetIdFilter, clientIdFilter, eventTypeFilter, eventTypeFilter2) }} disabled={rowsLoading}>
             {rowsLoading ? 'Cargando...' : 'Cargar datos'}
           </button>
           <label className="inline-label">
@@ -5302,6 +5044,129 @@ function App() {
       </section>
 
         </>
+      )}
+
+      {activeMenu === 'dashboard' && (
+        <section className="card">
+          <h2>6) Zonas sin cobertura GPS</h2>
+          <p className="subtitle source-chip">{sourceLabel}</p>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+            {!coverageData && (
+              <button
+                onClick={() => loadCoverageData(20, false)}
+                disabled={coverageLoading || !summaryClientId.trim()}
+                style={{ fontSize: 13 }}
+              >
+                {coverageLoading
+                  ? 'Cargando…'
+                  : coverageCacheStatus?.exists
+                    ? 'Cargar desde caché'
+                    : 'Calcular análisis (top 20 assets)'}
+              </button>
+            )}
+            {!summaryClientId.trim() && !coverageData && (
+              <p className="subtitle" style={{ margin: 0 }}>Ingresa un clientId en el Resumen Ejecutivo (sección 0) primero.</p>
+            )}
+            {coverageData && !coverageLoading && (
+              <button
+                onClick={() => loadCoverageData(20, true)}
+                disabled={coverageLoading}
+                style={{ fontSize: 13, background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1' }}
+                title="Recalcula todos los assets y actualiza el caché"
+              >
+                ↺ Recalcular
+              </button>
+            )}
+            {coverageData && !coverageLoading && (
+              <button onClick={openCoverageMapWindow} style={{ fontSize: 13 }}>
+                Ver mapa ↗
+              </button>
+            )}
+          </div>
+
+          {coverageCacheStatus && !coverageLoading && (
+            <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
+              {coverageCacheStatus.exists
+                ? `Caché disponible · última actualización: ${coverageCacheStatus.cached_at ? new Date(coverageCacheStatus.cached_at).toLocaleString('es-MX') : '—'}${coverageCacheStatus.stale ? ' · ⚠ caché desactualizado' : ''}`
+                : 'Sin caché — se calculará al solicitar'}
+            </p>
+          )}
+          {coverageData?.from_cache === false && !coverageLoading && (
+            <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
+              Recién calculado y guardado en caché · {coverageData.cached_at ? new Date(coverageData.cached_at).toLocaleString('es-MX') : ''}
+            </p>
+          )}
+
+          {coverageLoading && (
+            <p className="subtitle" style={{ color: '#6b7280' }}>
+              {coverageCacheStatus?.exists ? 'Cargando datos del caché…' : `Calculando cobertura para clientId ${summaryClientId} — puede tardar ~30 s…`}
+            </p>
+          )}
+
+          {coverageData && !coverageLoading && (
+            <>
+              {coverageData.error && <p style={{ color: '#dc2626', fontSize: 13 }}>{coverageData.error}</p>}
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
+                {[
+                  { label: 'Assets analizados', value: coverageData.total_assets_analyzed ?? 0, color: '#1d4ed8', bg: '#eff6ff' },
+                  { label: 'Zonas sin cobertura', value: coverageData.structural_zones ?? 0, color: '#dc2626', bg: '#fef2f2', note: '≥2 assets afectados' },
+                  { label: 'Eventos aislados', value: coverageData.isolated_events ?? 0, color: '#d97706', bg: '#fffbeb', note: '1 asset afectado' },
+                  { label: 'Puntos sin GPS', value: (coverageData.total_lost_points ?? 0).toLocaleString(), color: '#7c3aed', bg: '#f5f3ff' },
+                ].map((c) => (
+                  <div key={c.label} style={{ background: c.bg, border: `1px solid ${c.color}33`, borderRadius: 8, padding: '10px 16px', minWidth: 140 }}>
+                    <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 2 }}>{c.label}</div>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: c.color }}>{c.value}</div>
+                    {c.note && <div style={{ fontSize: 11, color: '#9ca3af' }}>{c.note}</div>}
+                  </div>
+                ))}
+              </div>
+
+              {coverageData.hotspots && coverageData.hotspots.length > 0 && (
+                <>
+                  <h4 style={{ margin: '0 0 8px', fontSize: 14 }}>Zonas más afectadas ({coverageData.total_hotspots} total)</h4>
+                  <div className="table-wrap">
+                    <table style={{ fontSize: 13 }}>
+                      <thead>
+                        <tr>
+                          <th>#</th><th>Latitud</th><th>Longitud</th><th>Assets afectados</th><th>Eventos</th><th>Categoría</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {coverageData.hotspots.slice(0, 20).map((h, i) => (
+                          <tr key={i}>
+                            <td>{i + 1}</td>
+                            <td>{h.lat?.toFixed(4)}</td>
+                            <td>{h.lon?.toFixed(4)}</td>
+                            <td><strong style={{ color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706' }}>{h.asset_count}</strong></td>
+                            <td>{h.event_count}</td>
+                            <td>
+                              <span style={{
+                                background: h.category === 'zona_sin_cobertura' ? '#fef2f2' : '#fffbeb',
+                                color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706',
+                                border: `1px solid ${h.category === 'zona_sin_cobertura' ? '#fca5a5' : '#fcd34d'}`,
+                                borderRadius: 4, padding: '1px 6px', fontSize: 11,
+                              }}>
+                                {h.category === 'zona_sin_cobertura' ? 'Sin cobertura' : 'Evento aislado'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              {coverageData.errors && coverageData.errors.length > 0 && (
+                <details style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+                  <summary>{coverageData.errors.length} asset(s) con errores al procesar</summary>
+                  <ul style={{ marginTop: 4 }}>{coverageData.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+                </details>
+              )}
+            </>
+          )}
+        </section>
       )}
 
       {activeMenu === 'carreteras' && (

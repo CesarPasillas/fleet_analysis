@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import math
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -16,6 +18,9 @@ _MAX_GEO_CALLS: int = 100
 _OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
 _OVERPASS_URL_FALLBACK = "https://overpass-api.de/api/interpreter"
 _OVERPASS_TIMEOUT = 8
+
+# Persistent disk cache so Overpass is never called twice for the same location
+_DISK_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "geo_cache"
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 _NOMINATIM_TIMEOUT = 6
 
@@ -70,6 +75,29 @@ _HEURISTIC_PARADA_LARGA_S: float = 2 * 3600  # ≥2 h
 
 _geo_cache: dict[tuple[float, float, int], tuple[str | None, str | None]] = {}
 # Maps (lat, lon) → (category_or_None, place_name_or_None)
+
+
+def _disk_cache_path(lat: float, lon: float) -> Path:
+    return _DISK_CACHE_DIR / f"{round(lat, 4)}_{round(lon, 4)}.json"
+
+
+def _load_disk_geo(lat: float, lon: float) -> tuple[str | None, str | None] | None:
+    p = _disk_cache_path(lat, lon)
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text())
+        return d.get("category"), d.get("place")
+    except Exception:
+        return None
+
+
+def _save_disk_geo(lat: float, lon: float, category: str | None, place: str | None) -> None:
+    try:
+        _DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _disk_cache_path(lat, lon).write_text(json.dumps({"category": category, "place": place}))
+    except Exception:
+        pass
 _nominatim_cache: dict[tuple[float, float], tuple[str | None, str | None]] = {}
 
 _HIGHWAY_TYPES = {
@@ -231,12 +259,127 @@ def _build_overpass_query(lat: float, lon: float) -> str:
 
 
 _OVERPASS_HEADERS = {"User-Agent": "fleet-analysis-phd/1.0 (research)"}
+_BATCH_SIZE = 15  # locations per Overpass batch request
+
+
+def _build_batch_overpass_query(locations: list[tuple[float, float]]) -> str:
+    """One Overpass query covering multiple locations at once."""
+    tag_filters = [
+        '["amenity"="fuel"]', '["shop"="fuel"]',
+        '["amenity"="restaurant"]', '["amenity"="fast_food"]',
+        '["amenity"="cafe"]', '["amenity"="food_court"]',
+        '["tourism"="hotel"]', '["tourism"="motel"]', '["tourism"="hostel"]',
+        '["shop"="convenience"]', '["shop"="supermarket"]', '["shop"="wholesale"]',
+        '["amenity"="pharmacy"]',
+        '["amenity"="hospital"]', '["amenity"="clinic"]',
+        '["shop"="car_repair"]', '["shop"="tyres"]', '["amenity"="car_wash"]',
+        '["building"="warehouse"]', '["landuse"="industrial"]', '["amenity"="weighbridge"]',
+    ]
+    parts = []
+    for lat, lon in locations:
+        area = f"(around:{_GEO_RADIUS_M},{lat},{lon})"
+        for f in tag_filters:
+            parts.append(f"  nwr{f}{area};")
+    timeout = min(90, 15 + 4 * len(locations))
+    return f"[out:json][timeout:{timeout}];\n(\n" + "\n".join(parts) + "\n);\nout center tags;"
+
+
+def _prewarm_geo_cache_batch(stops: list[dict], max_calls: int) -> None:
+    """Batch-query Overpass for all uncached stop locations. Much faster than one-by-one."""
+    seen: set[tuple[float, float]] = set()
+    to_fetch: list[tuple[float, float]] = []
+    for s in stops:
+        lat, lon = s.get("latitude"), s.get("longitude")
+        if not lat or not lon:
+            continue
+        key = (round(lat, 4), round(lon, 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        cache_key = (key[0], key[1], _GEO_RADIUS_M)
+        if cache_key in _geo_cache:
+            continue
+        disk = _load_disk_geo(lat, lon)
+        if disk is not None:
+            _geo_cache[cache_key] = disk
+            continue
+        to_fetch.append((lat, lon))
+        if len(to_fetch) >= max_calls:
+            break
+
+    if not to_fetch:
+        return
+
+    for i in range(0, len(to_fetch), _BATCH_SIZE):
+        batch = to_fetch[i: i + _BATCH_SIZE]
+        query = _build_batch_overpass_query(batch)
+        batch_timeout = 15 + 4 * len(batch)
+
+        elements = None
+        for url in (_OVERPASS_URL, _OVERPASS_URL_FALLBACK):
+            try:
+                resp = requests.post(
+                    url, data={"data": query}, headers=_OVERPASS_HEADERS,
+                    timeout=batch_timeout,
+                )
+                resp.raise_for_status()
+                elements = resp.json().get("elements", [])
+                break
+            except Exception:
+                continue
+
+        if elements is None:
+            time.sleep(5)  # server is busy — wait before next batch
+            continue
+
+        # Map each returned element to the batch location(s) it falls within
+        loc_results: dict[tuple[float, float], tuple[str | None, str | None]] = {
+            (round(lat, 4), round(lon, 4)): (None, None) for lat, lon in batch
+        }
+        for el in elements:
+            tags = el.get("tags", {})
+            if el.get("type") == "node":
+                el_lat, el_lon = el.get("lat"), el.get("lon")
+            else:
+                center = el.get("center", {})
+                el_lat, el_lon = center.get("lat"), center.get("lon")
+            if el_lat is None or el_lon is None:
+                continue
+            cat, place = None, None
+            for tag_key, tag_val, category in _OSM_TAGS:
+                if tags.get(tag_key) == tag_val:
+                    place = tags.get("name") or tags.get("brand") or tag_val
+                    cat = category
+                    break
+            if cat is None:
+                continue
+            for lat, lon in batch:
+                key = (round(lat, 4), round(lon, 4))
+                if loc_results[key][0] is not None:
+                    continue  # already classified
+                if _haversine_m(lat, lon, el_lat, el_lon) <= _GEO_RADIUS_M:
+                    loc_results[key] = (cat, place)
+
+        # Persist results to cache and disk
+        for (rlat, rlon), (cat, place) in loc_results.items():
+            cache_key = (rlat, rlon, _GEO_RADIUS_M)
+            _geo_cache[cache_key] = (cat, place)
+            _save_disk_geo(rlat, rlon, cat, place)
+
+        if i + _BATCH_SIZE < len(to_fetch):
+            time.sleep(1)  # polite gap between batch requests
 
 
 def _classify_geo(lat: float, lon: float) -> tuple[str | None, str | None]:
     cache_key = (round(lat, 4), round(lon, 4), _GEO_RADIUS_M)
     if cache_key in _geo_cache:
         return _geo_cache[cache_key]
+
+    # Check persistent disk cache first (survives server restarts)
+    disk = _load_disk_geo(lat, lon)
+    if disk is not None:
+        _geo_cache[cache_key] = disk
+        return disk
 
     query = _build_overpass_query(lat, lon)
 
@@ -253,8 +396,8 @@ def _classify_geo(lat: float, lon: float) -> tuple[str | None, str | None]:
         except Exception:
             continue
     if elements is None:
-        _geo_cache[cache_key] = (None, None)
-        return None, None
+        # Network failure — don't cache; caller handles with heuristics
+        return "ERROR", None
 
     for el in elements:
         tags = el.get("tags", {})
@@ -262,9 +405,12 @@ def _classify_geo(lat: float, lon: float) -> tuple[str | None, str | None]:
             if tags.get(tag_key) == tag_val:
                 name = tags.get("name") or tags.get("brand") or tag_val
                 _geo_cache[cache_key] = (category, name)
+                _save_disk_geo(lat, lon, category, name)
                 return category, name
 
+    # Empty response = confirmed no POI — cache to disk to avoid re-querying
     _geo_cache[cache_key] = (None, None)
+    _save_disk_geo(lat, lon, None, None)
     return None, None
 
 
@@ -288,7 +434,7 @@ def _classify_via_nominatim(lat: float, lon: float) -> tuple[str | None, str | N
         resp.raise_for_status()
         data = resp.json()
     except Exception:
-        _nominatim_cache[cache_key] = (None, None)
+        # Network failure — don't cache so the next call retries
         return None, None
 
     addr = data.get("address", {})
@@ -321,22 +467,26 @@ def _query_geo_for_stop(
     if not use_geo or not stop["latitude"] or not stop["longitude"]:
         return None, None, None, geo_calls
 
+    lat, lon = stop["latitude"], stop["longitude"]
+
     geo_cat, geo_place = None, None
     if geo_calls < max_geo_calls:
-        geo_cat, geo_place = _classify_geo(stop["latitude"], stop["longitude"])
+        geo_cat, geo_place = _classify_geo(lat, lon)
         geo_calls += 1
-        time.sleep(0.25)
+        time.sleep(0.1)
+        if geo_cat == "ERROR":
+            geo_cat, geo_place = None, None
 
+    # Nominatim only for display label — never sets the category.
+    # Only call it when there's no cache hit yet (avoids repeated slow HTTP calls).
     nearby_address = None
     if geo_cat is None:
-        # _classify_via_nominatim returns ("en_carretera", road_name) on highways,
-        # or (None, address_string) for regular locations
-        nom_cat, nom_place = _classify_via_nominatim(stop["latitude"], stop["longitude"])
-        time.sleep(0.25)
-        if nom_cat == "en_carretera":
-            geo_cat = "en_carretera"
-            geo_place = nom_place
-        else:
+        nom_cache_key = (round(lat, 3), round(lon, 3))
+        if nom_cache_key in _nominatim_cache:
+            nearby_address = _nominatim_cache[nom_cache_key][1]
+        elif geo_calls <= max_geo_calls:
+            _, nom_place = _classify_via_nominatim(lat, lon)
+            time.sleep(0.1)
             nearby_address = nom_place
 
     return geo_cat, geo_place, nearby_address, geo_calls
@@ -391,6 +541,9 @@ def detect_and_classify_stops(
         return {"total_records": 0, "total_stops": 0, "total_stop_minutes": 0.0, "stops": [], "error": None}
 
     stops = _raw_stops(df, min_stop_minutes * 60.0, max_step_m, min_records)
+
+    if use_geo and stops:
+        _prewarm_geo_cache_batch(stops, max_geo_calls)
 
     geo_calls = 0
     for stop in stops:

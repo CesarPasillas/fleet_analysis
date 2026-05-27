@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -472,7 +474,7 @@ def detect_routes(
         500: {"description": "Error en detección de paradas"},
     },
 )
-def stops(
+async def stops(
     asset_id: int,
     client_id: int,
     min_stop_minutes: float = 5.0,
@@ -498,10 +500,10 @@ def stops(
         raise HTTPException(status_code=500, detail=f"Error accediendo snapshot: {exc}") from exc
 
     try:
-        result = detect_and_classify_stops(
-            merged_subset,
-            min_stop_minutes=min_stop_minutes,
-            use_geo=use_geo,
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(detect_and_classify_stops, merged_subset, min_stop_minutes=min_stop_minutes, use_geo=use_geo),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Error en detección de paradas: {exc}") from exc
