@@ -46,9 +46,12 @@ function App() {
   const [routeDateTo, setRouteDateTo] = useState('')
   const [signalLossData, setSignalLossData] = useState(null)
   const [signalLossLoading, setSignalLossLoading] = useState(false)
+  const [signalLossProgress, setSignalLossProgress] = useState(0)
   const [signalLossAnomalies, setSignalLossAnomalies] = useState(null)
   const [stopsData, setStopsData] = useState(null)
   const [stopsLoading, setStopsLoading] = useState(false)
+  const [stopsProgress, setStopsProgress] = useState(0)
+  const [stopsWithGeo, setStopsWithGeo] = useState(false)
   const [selectedMapRouteIndex, setSelectedMapRouteIndex] = useState(null)
   const [expandedRouteIndex, setExpandedRouteIndex] = useState(null)
   const [routePointsFilterMode, setRoutePointsFilterMode] = useState('all')
@@ -68,9 +71,17 @@ function App() {
   const [clientAssetsTotal, setClientAssetsTotal] = useState(0)
   const [selectedAssets, setSelectedAssets] = useState(new Set())
   const [assetSearch, setAssetSearch] = useState('')
-  const [coverageData, setCoverageData] = useState(null)
-  const [coverageLoading, setCoverageLoading] = useState(false)
-  const [coverageCacheStatus, setCoverageCacheStatus] = useState(null)
+  const [globalCovData, setGlobalCovData] = useState(null)
+  const [histStops, setHistStops] = useState(null)
+  const [histStopsLoading, setHistStopsLoading] = useState(false)
+  const [batchStops, setBatchStops] = useState(null)
+  const [batchStopsJob, setBatchStopsJob] = useState(null)
+  const [batchStopsPolling, setBatchStopsPolling] = useState(false)
+  const [globalCovJob, setGlobalCovJob] = useState(null)   // {status, progress, message, done}
+  const [globalCovPolling, setGlobalCovPolling] = useState(false)
+  const [roadCovMatch, setRoadCovMatch] = useState(null)
+  const [roadCovLoading, setRoadCovLoading] = useState(false)
+  const [roadCovFilter, setRoadCovFilter] = useState('all')  // 'all' | 'alta' | 'media' | 'baja' | 'aislada'
 
   const loadFleetSummary = async () => {
     setFleetSummaryLoading(true)
@@ -96,12 +107,6 @@ function App() {
     }
   }
 
-  const checkCoverageCache = async (id) => {
-    if (!id) return
-    fetch(`${API_BASE}/routes/signal-loss/coverage-summary/cache-status?client_id=${id}`)
-      .then((res) => { if (res.ok) res.json().then(setCoverageCacheStatus) })
-  }
-
   const loadClientAssets = async (cid) => {
     const id = (cid ?? summaryClientId).toString().trim()
     if (!id) return
@@ -113,147 +118,188 @@ function App() {
       setSelectedAssets(new Set())
       setAssetSearch('')
     }
-    setCoverageData(null)
-    setCoverageCacheStatus(null)
-    checkCoverageCache(id)
   }
 
-
-  const loadCoverageData = async (limitAssets = 20, forceRefresh = false) => {
-    const id = summaryClientId.trim()
-    if (!id) return
-    setCoverageLoading(true)
-    if (forceRefresh) setCoverageData(null)
+  const loadGlobalCovCache = async () => {
     try {
-      const url = `${API_BASE}/routes/signal-loss/coverage-summary?client_id=${id}&limit_assets=${limitAssets}${forceRefresh ? '&force_refresh=true' : ''}`
-      const res = await fetch(url)
+      const res = await fetch(`${API_BASE}/routes/signal-loss/global-coverage`)
       if (res.ok) {
-        const data = await res.json()
-        setCoverageData(data)
-        setCoverageCacheStatus({ exists: true, stale: false, cached_at: data.cached_at })
+        const d = await res.json()
+        if (d.available) setGlobalCovData(d)
       }
-    } finally {
-      setCoverageLoading(false)
-    }
+    } catch (_) {}
   }
 
-  const openCoverageMapWindow = () => {
-    if (!coverageData || !Array.isArray(coverageData.hotspots)) {
-      setError('No hay datos de cobertura para mostrar.')
-      return
-    }
-    const hotspots = coverageData.hotspots
-    if (hotspots.length === 0) {
-      setError('No se encontraron hotspots de cobertura para mapear.')
-      return
-    }
+  const loadRoadCovMatch = async () => {
+    setRoadCovLoading(true)
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/routes/signal-loss/road-coverage-match`)
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Error en el análisis'); }
+      const d = await res.json()
+      if (d.error) throw new Error(d.error)
+      setRoadCovMatch(d)
+    } catch (e) { setError(e.message) }
+    finally { setRoadCovLoading(false) }
+  }
 
-    const mapWindow = window.open('', '_blank', 'width=1300,height=850')
-    if (!mapWindow) {
-      setError('El navegador bloqueó la ventana emergente. Permite pop-ups para este sitio y vuelve a intentarlo.')
+  const startGlobalCovJob = async () => {
+    setError('')
+    setGlobalCovData(null)   // clear stale results while new job runs
+    try {
+      const res = await fetch(`${API_BASE}/routes/signal-loss/global-coverage/compute`, { method: 'POST' })
+      if (!res.ok) { setError('No se pudo iniciar el análisis global.'); return }
+      const d = await res.json()
+      setGlobalCovJob(d.status)
+      setGlobalCovPolling(true)
+    } catch (e) { setError(e.message) }
+  }
+
+
+  const loadBatchStopsCache = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/routes/stops/batch-analysis`)
+      if (res.ok) { const d = await res.json(); if (d.available) setBatchStops(d) }
+    } catch (_) {}
+  }
+
+  const startBatchStopsJob = async (force = false) => {
+    setError('')
+    if (force) setBatchStops(null)
+    try {
+      const res = await fetch(`${API_BASE}/routes/stops/batch-analysis/compute?force=${force}`, { method: 'POST' })
+      if (!res.ok) { setError('No se pudo iniciar el análisis batch.'); return }
+      const d = await res.json()
+      setBatchStopsJob(d.status)
+      setBatchStopsPolling(true)
+    } catch (e) { setError(e.message) }
+  }
+
+  const loadHistStops = async () => {
+    setHistStopsLoading(true)
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/routes/stops/historical-analysis?top_locations=30`)
+      if (!res.ok) throw new Error('Error al cargar análisis histórico de paradas')
+      const d = await res.json()
+      if (d.error) throw new Error(d.error)
+      setHistStops(d)
+    } catch (e) { setError(e.message) }
+    finally { setHistStopsLoading(false) }
+  }
+
+  const openHistStopsMapWindow = () => {
+    if (!histStops?.top_locations?.length) return
+    const locs = histStops.top_locations
+    const mapWindow = window.open('', '_blank', 'width=1200,height=800')
+    if (!mapWindow) { setError('El navegador bloqueó el popup.'); return }
+    const safeLocs = JSON.stringify(locs).replaceAll('</', String.raw`<\/`)
+    const CAT_COLORS = {ralenti:'#94a3b8',motor_apagado:'#64748b',entrega:'#10b981',
+      punto_de_control:'#10b981',parada_en_geocerca:'#0ea5e9',estacionamiento_prolongado:'#f97316',
+      pernocta_fuera_de_base:'#dc2626',parada_no_autorizada:'#ef4444'}
+    const safeColors = JSON.stringify(CAT_COLORS).replaceAll('</', String.raw`<\/`)
+    mapWindow.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"/>
+<title>Top paradas históricas</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<style>html,body{margin:0;height:100%;font-family:Inter,system-ui,sans-serif;}
+#map{width:100%;height:calc(100% - 48px);}
+.hdr{height:48px;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;font-weight:700;}
+</style></head><body>
+<div class="hdr">Top ${locs.length} ubicaciones de paradas — histórico de flota completa</div>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+const locs = ${safeLocs};
+const CAT_COLORS = ${safeColors};
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const bounds = [];
+locs.forEach((l,i) => {
+  const color = CAT_COLORS[l.dominant_cat] || '#94a3b8';
+  const r = Math.max(10, Math.min(40, Math.sqrt(l.unique_assets) * 1.5));
+  const pos = [l.lat, l.lon]; bounds.push(pos);
+  L.circleMarker(pos,{radius:r,color:'#fff',weight:2,fillColor:color,fillOpacity:0.85}).addTo(map)
+   .bindPopup('<b>'+l.icon+' #'+(i+1)+' '+l.dominant_cat.replace(/_/g,' ')+'</b><br/>' +
+              'Eventos: <b>'+l.total_events.toLocaleString()+'</b><br/>' +
+              'Assets únicos: <b>'+l.unique_assets+'</b><br/>' +
+              'Clientes: <b>'+l.unique_clients+'</b><br/>' +
+              'Lat: '+l.lat.toFixed(4)+' Lon: '+l.lon.toFixed(4))
+   .bindTooltip(l.icon+' #'+(i+1)+' · '+l.total_events.toLocaleString()+' eventos',{direction:'top'});
+});
+if(bounds.length) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
+</script></body></html>`)
+    mapWindow.document.close()
+  }
+
+  const openGlobalCovMapWindow = () => {
+    const allHotspots = [
+      ...(globalCovData?.structural_hotspots ?? []),
+      ...(globalCovData?.isolated_hotspots ?? []),
+    ]
+    if (!globalCovData || allHotspots.length === 0) {
+      setError('No hay datos de cobertura global para mostrar en el mapa.')
       return
     }
+    const hotspots = allHotspots
+    const mapWindow = window.open('', '_blank', 'width=1400,height=900')
+    if (!mapWindow) { setError('El navegador bloqueó la ventana. Permite pop-ups para este sitio.'); return }
 
-    const title = `Cobertura GPS — clientId=${coverageData.client_id} · ${coverageData.total_assets_analyzed} assets`
     const safeHotspots = JSON.stringify(hotspots).replaceAll('</', String.raw`<\/`)
-    const structural = coverageData.structural_zones
-    const isolated = coverageData.isolated_events
+    const structural = globalCovData.structural_zones ?? 0
+    const isolated = globalCovData.isolated_events ?? 0
+    const totalClients = globalCovData.total_clients ?? 0
 
-    const htmlContent = `
-      <!doctype html>
-      <html lang="es">
-        <head>
-          <meta charset="utf-8"/>
-          <meta name="viewport" content="width=device-width,initial-scale=1"/>
-          <title>${title}</title>
-          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-          <style>
-            html,body{margin:0;padding:0;height:100%;font-family:Inter,system-ui,sans-serif;}
-            #map{width:100%;height:calc(100% - 56px);}
-            .hdr{height:56px;display:flex;align-items:center;justify-content:space-between;
-              padding:0 16px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;color:#111827;gap:12px;}
-            .badge{border-radius:12px;padding:2px 10px;font-size:12px;font-weight:600;}
-          </style>
-        </head>
-        <body>
-          <div class="hdr">
-            <span><b>${title}</b></span>
-            <span>
-              <span class="badge" style="background:#fee2e2;color:#991b1b;">⛔ Zona estructural: ${structural}</span>
-              &nbsp;
-              <span class="badge" style="background:#fef9c3;color:#854d0e;">⚡ Evento aislado: ${isolated}</span>
-            </span>
-          </div>
-          <div id="map"></div>
-          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-          <script>
-            const hotspots = ${safeHotspots};
-
-            const map = L.map('map');
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-              maxZoom:19, attribution:'&copy; OpenStreetMap contributors'
-            }).addTo(map);
-
-            const structLayer = L.layerGroup().addTo(map);
-            const isolLayer   = L.layerGroup().addTo(map);
-            const bounds = [];
-
-            const escHtml = (v) => String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-            hotspots.forEach((h) => {
-              const pos = [h.lat, h.lon];
-              bounds.push(pos);
-              const isStruct = h.category === 'zona_sin_cobertura';
-              const r = Math.min(22, 5 + h.asset_count * 3);
-              const color = isStruct ? '#dc2626' : '#f59e0b';
-              const fill  = isStruct ? '#fca5a5' : '#fde68a';
-              const layer = isStruct ? structLayer : isolLayer;
-
-              L.circleMarker(pos, {
-                radius: r,
-                color,
-                fillColor: fill,
-                fillOpacity: 0.75,
-                weight: isStruct ? 2 : 1,
-              }).addTo(layer).bindPopup(
-                '<b>' + (isStruct ? '⛔ Zona sin cobertura' : '⚡ Evento aislado') + '</b><br/>' +
-                'Assets afectados: <b>' + h.asset_count + '</b><br/>' +
-                'Eventos sin GPS: <b>' + h.event_count + '</b><br/>' +
-                'IDs: ' + escHtml(h.asset_ids.slice(0,10).join(', ')) + (h.asset_ids.length > 10 ? '…' : '') + '<br/>' +
-                'Lat: ' + h.lat + ' Lon: ' + h.lon
-              );
-            });
-
-            const legend = L.control({ position: 'bottomleft' });
-            legend.onAdd = () => {
-              const d = L.DomUtil.create('div');
-              d.style.cssText = 'background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:10px 14px;font-size:12px;line-height:2;';
-              d.innerHTML =
-                '<b>Cobertura GPS — clientId ${coverageData.client_id}</b><br/>' +
-                '<span style="color:#dc2626">●</span> Zona estructural sin cobertura (≥2 assets)<br/>' +
-                '<span style="color:#f59e0b">●</span> Evento aislado (1 asset)<br/>' +
-                'Tamaño del círculo = assets afectados<br/>' +
-                'Assets analizados: <b>${coverageData.total_assets_analyzed}</b>';
-              return d;
-            };
-            legend.addTo(map);
-
-            L.control.layers(null, {
-              'Zonas estructurales': structLayer,
-              'Eventos aislados': isolLayer,
-            }, { collapsed: false }).addTo(map);
-
-            if (bounds.length > 0) map.fitBounds(L.latLngBounds(bounds), { padding: [28, 28] });
-          </script>
-        </body>
-      </html>
-    `
-    const blob = new Blob([htmlContent], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
-    mapWindow.location.replace(url)
-    mapWindow.addEventListener('beforeunload', () => URL.revokeObjectURL(url), { once: true })
+    mapWindow.document.write(`<!doctype html>
+<html lang="es"><head><meta charset="utf-8"/>
+<title>Cobertura GPS Global — ${totalClients} clientes</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<style>
+html,body{margin:0;padding:0;height:100%;font-family:Inter,system-ui,sans-serif;}
+#map{width:100%;height:calc(100% - 56px);}
+.hdr{height:56px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 16px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;gap:10px;}
+.badge{border-radius:12px;padding:2px 10px;font-size:12px;font-weight:600;}
+</style></head><body>
+<div class="hdr">
+  <b>Cobertura GPS Global — ${totalClients} clientes analizados</b>
+  <span>
+    <span class="badge" style="background:#fee2e2;color:#991b1b;">⛔ Zonas estructurales: ${structural}</span>
+    &nbsp;
+    <span class="badge" style="background:#fef9c3;color:#854d0e;">⚡ Eventos aislados: ${isolated}</span>
+  </span>
+</div>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+const hotspots = ${safeHotspots};
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const structLayer = L.layerGroup().addTo(map);
+const isolLayer = L.layerGroup().addTo(map);
+const bounds = [];
+hotspots.forEach(h => {
+  const pos = [h.lat, h.lon];
+  bounds.push(pos);
+  const isStruct = h.category === 'zona_sin_cobertura';
+  const r = Math.min(20, 4 + h.asset_count * 2);
+  L.circleMarker(pos, {
+    radius: r, color: isStruct ? '#dc2626' : '#f59e0b',
+    fillColor: isStruct ? '#fca5a5' : '#fde68a', fillOpacity: 0.75, weight: isStruct ? 2 : 1
+  }).addTo(isStruct ? structLayer : isolLayer).bindPopup(
+    '<b>' + (isStruct ? '⛔ Zona sin cobertura' : '⚡ Evento aislado') + '</b><br/>' +
+    'Assets: <b>' + h.asset_count + '</b> · Clientes: <b>' + h.client_count + '</b><br/>' +
+    'Eventos: ' + h.event_count + '<br/>' +
+    'Lat: ' + h.lat.toFixed(4) + ' Lon: ' + h.lon.toFixed(4)
+  );
+});
+L.control.layers(null,{'Zonas estructurales (≥2 assets)':structLayer,'Eventos aislados':isolLayer},{collapsed:false}).addTo(map);
+if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
+</script></body></html>`)
+    mapWindow.document.close()
   }
 
   const loadRows = async (
@@ -393,6 +439,7 @@ function App() {
     const assetValue = routeAssetId.trim()
     const clientValue = routeClientId.trim()
     if (!assetValue || !clientValue) return
+    setSignalLossProgress(0)
     setSignalLossLoading(true)
     setSignalLossData(null)
     setSignalLossAnomalies(null)
@@ -413,10 +460,18 @@ function App() {
     const assetValue = routeAssetId.trim()
     const clientValue = routeClientId.trim()
     if (!assetValue || !clientValue) return
+    setStopsProgress(0)
+    setStopsWithGeo(useGeo)
     setStopsLoading(true)
     setStopsData(null)
     const query = buildRouteQuery(assetValue, clientValue)
     query.set('use_geo', String(useGeo))
+    // Filter to the selected route's time window
+    const selectedRoute = expandedRouteIndex !== null
+      ? routeDetection?.complete_routes?.[expandedRouteIndex]
+      : null
+    if (selectedRoute?.start_timestamp) query.set('date_from', selectedRoute.start_timestamp)
+    if (selectedRoute?.end_timestamp)   query.set('date_to',   selectedRoute.end_timestamp)
     try {
       const resp = await fetch(`${API_BASE}/routes/stops?${query.toString()}`)
       if (resp.ok) setStopsData(await resp.json())
@@ -497,7 +552,74 @@ function App() {
     loadSnapshotStatus()
     loadCarreterasCatalog()
     loadRows(0, pageSize)
+    loadGlobalCovCache()
   }, [])
+
+  useEffect(() => {
+    if (!globalCovPolling) return
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/routes/signal-loss/global-coverage/status`)
+        if (!res.ok) return
+        const s = await res.json()
+        setGlobalCovJob(s)
+        if (s.done) {
+          setGlobalCovPolling(false)
+          loadGlobalCovCache()
+        }
+      } catch (_) {}
+    }, 5000)
+    return () => clearInterval(id)
+  }, [globalCovPolling])
+
+  useEffect(() => {
+    if (!batchStopsPolling) return
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/routes/stops/batch-analysis/status`)
+        if (!res.ok) return
+        const s = await res.json()
+        setBatchStopsJob(s)
+        if (s.done) { setBatchStopsPolling(false); loadBatchStopsCache() }
+      } catch (_) {}
+    }, 6000)
+    return () => clearInterval(id)
+  }, [batchStopsPolling])
+
+  // Load batch stops cache on startup
+  useEffect(() => { loadBatchStopsCache() }, [])
+
+  // Simulated progress for section 4 (signal loss ~10-30s)
+  useEffect(() => {
+    if (!signalLossLoading) { setSignalLossProgress(100); return }
+    setSignalLossProgress(0)
+    let p = 0
+    const id = setInterval(() => {
+      p = Math.min(90, p + Math.max(0.4, (90 - p) * 0.04))
+      setSignalLossProgress(Math.round(p))
+    }, 400)
+    return () => clearInterval(id)
+  }, [signalLossLoading])
+
+  // Simulated progress for section 5 (stops: fast without geo, slow with geo)
+  useEffect(() => {
+    if (!stopsLoading) { setStopsProgress(100); return }
+    setStopsProgress(0)
+    let p = 0
+    // With geo (OSM calls): ~minutes → slower increment; without: ~15s → faster
+    const tick = stopsWithGeo ? 600 : 350
+    const rate = stopsWithGeo ? 0.02 : 0.05
+    const id = setInterval(() => {
+      p = Math.min(90, p + Math.max(0.2, (90 - p) * rate))
+      setStopsProgress(Math.round(p))
+    }, tick)
+    return () => clearInterval(id)
+  }, [stopsLoading, stopsWithGeo])
+
+  // Clear section 5 (stops) when the selected route changes — stops are route-specific
+  useEffect(() => {
+    setStopsData(null)
+  }, [expandedRouteIndex])
 
 
   const sourceLabel = (() => {
@@ -1772,9 +1894,9 @@ function App() {
 
             expectedRoads.forEach((road) => {
               const roadLine = L.polyline(road.latlngs, {
-                color: '#f97316',
+                color: '#22c55e',
                 weight: 3,
-                opacity: 0.6,
+                opacity: 0.7,
                 dashArray: '6,4',
               }).addTo(roadsLayer);
 
@@ -1807,7 +1929,7 @@ function App() {
             const routeLines = [];
             gpsSections.forEach((section, idx) => {
               const latlngs = section.map((p) => [p.latitude, p.longitude]);
-              const line = L.polyline(latlngs, { color: '#2563eb', weight: 4, opacity: 0.95 }).addTo(routeLayer);
+              const line = L.polyline(latlngs, { color: '#8b5cf6', weight: 4, opacity: 0.95 }).addTo(routeLayer);
               routeLines.push(line);
 
               // Draw dashed bridge to next section
@@ -1818,7 +1940,7 @@ function App() {
                   [bridgeEnd.latitude, bridgeEnd.longitude],
                 ];
                 L.polyline(bridgeLatlngs, {
-                  color: '#f97316',
+                  color: '#8b5cf6',
                   weight: 2,
                   opacity: 0.7,
                   dashArray: '8,6',
@@ -1853,7 +1975,7 @@ function App() {
             // Draw lost-point gap markers
             const lostIcon = L.divIcon({
               className: '',
-              html: '<div style="background:#f97316;color:#fff;border:2px solid #7c2d12;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
+              html: '<div style="background:#8b5cf6;color:#fff;border:2px solid #4c1d95;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
               iconSize: [14, 14],
               iconAnchor: [7, 7],
             });
@@ -1920,7 +2042,7 @@ function App() {
                 }
                 // replace the section's polyline with the routed version
                 routeLines.forEach((l) => routeLayer.removeLayer(l));
-                L.polyline(routedLatlngs, { color: '#2563eb', weight: 4, opacity: 0.95 }).addTo(routeLayer);
+                L.polyline(routedLatlngs, { color: '#8b5cf6', weight: 4, opacity: 0.95 }).addTo(routeLayer);
                 statusEl.textContent = '✓ OSRM: tramos enrutados por carretera';
               }
             }
@@ -1954,7 +2076,7 @@ function App() {
               const marker = L.circleMarker([point.latitude, point.longitude], {
                 radius: isStart || isEnd ? 7 : 4,
                 color: '#111827',
-                fillColor: isStart ? '#16a34a' : (isEnd ? '#dc2626' : '#60a5fa'),
+                fillColor: isStart ? '#16a34a' : (isEnd ? '#dc2626' : '#06b6d4'),
                 fillOpacity: 0.95,
                 weight: 1,
               }).addTo(routeLayer);
@@ -1980,8 +2102,10 @@ function App() {
                 div.style.cssText = 'background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:8px 12px;font-size:12px;line-height:1.6;';
                 div.innerHTML =
                   '<b>Leyenda</b><br/>' +
-                  '<span style="color:#2563eb">━━</span> Ruta con GPS<br/>' +
-                  '<span style="color:#f97316">┄┄</span> Brecha sin conectividad<br/>' +
+                  '<span style="color:#8b5cf6">━━</span> Ruta con GPS<br/>' +
+                  '<span style="color:#8b5cf6">┄┄</span> Brecha sin conectividad<br/>' +
+                  '<span style="color:#06b6d4">●</span> Punto GPS<br/>' +
+                  '<span style="color:#22c55e">━━</span> Carretera esperada<br/>' +
                   '⚡ Punto perdido (posición estimada)<br/>' +
                   'Total sin GPS: <b>' + lostCount + '</b>';
                 return div;
@@ -2375,13 +2499,13 @@ function App() {
             sections.forEach((sec) => {
               const ll = sec.map((p) => [p.latitude, p.longitude]);
               allBounds.push(...ll);
-              L.polyline(ll, { color: '#2563eb', weight: 3, opacity: 0.85 }).addTo(gpsLayer);
+              L.polyline(ll, { color: '#8b5cf6', weight: 3, opacity: 0.85 }).addTo(gpsLayer);
             });
 
-            // GPS real markers (small blue dots)
+            // GPS real markers (cyan dots)
             allPts.filter((p) => p.latitude != null && !p.is_signal_loss).forEach((p) => {
               L.circleMarker([p.latitude, p.longitude], {
-                radius: 3, color: '#1d4ed8', fillColor: '#60a5fa', fillOpacity: 0.9, weight: 1
+                radius: 3, color: '#0f766e', fillColor: '#06b6d4', fillOpacity: 0.9, weight: 1
               }).addTo(gpsLayer).bindPopup(
                 '<b>GPS real</b><br/>gps: ' + escapeHtml(p.gps_timestamp) +
                 '<br/>diff: ' + p.diff_seconds + 's' +
@@ -2389,34 +2513,37 @@ function App() {
               );
             });
 
-            // --- 2. Puntos dentro de segmento sin señal con GPS real ---
+            // --- 2. Puntos dentro de segmento sin señal con GPS real (⚡ morado) ---
+            const lostIconSmall = L.divIcon({
+              className: '',
+              html: '<div style="background:#8b5cf6;color:#fff;border:2px solid #4c1d95;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
+              iconSize: [14, 14], iconAnchor: [7, 7],
+            });
             allPts.filter((p) => p.latitude != null && p.is_signal_loss).forEach((p) => {
-              L.circleMarker([p.latitude, p.longitude], {
-                radius: 5, color: '#7c2d12', fillColor: '#f97316', fillOpacity: 0.95, weight: 1.5
-              }).addTo(lossLayer).bindPopup(
-                '<b>⚡ GPS dentro de pérdida</b><br/>gps: ' + escapeHtml(p.gps_timestamp) +
-                '<br/>diff: ' + p.diff_seconds + 's' +
-                '<br/>lat: ' + p.latitude + ' lon: ' + p.longitude
-              );
+              L.marker([p.latitude, p.longitude], { icon: lostIconSmall })
+                .addTo(lossLayer).bindPopup(
+                  '<b>⚡ GPS dentro de pérdida</b><br/>gps: ' + escapeHtml(p.gps_timestamp) +
+                  '<br/>diff: ' + p.diff_seconds + 's' +
+                  '<br/>lat: ' + p.latitude + ' lon: ' + p.longitude
+                );
             });
 
-            // --- 3. Posiciones estimadas para puntos sin GPS (interpolado) ---
+            // --- 3. Posiciones estimadas para puntos sin GPS (⚡ rosa) ---
+            const estIcon = L.divIcon({
+              className: '',
+              html: '<div style="background:#ec4899;color:#9d174d;border:2px solid #9d174d;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
+              iconSize: [14, 14], iconAnchor: [7, 7],
+            });
             allPts.filter((p) => p.latitude == null && p.estimated_latitude != null).forEach((p) => {
               const pos = [p.estimated_latitude, p.estimated_longitude];
-              L.circleMarker(pos, {
-                radius: 4,
-                color: '#92400e',
-                fillColor: '#fde68a',
-                fillOpacity: 0.85,
-                weight: 1,
-                dashArray: '3,2',
-              }).addTo(estLayer).bindPopup(
-                '<b>⚡ Sin GPS (posición estimada)</b><br/>' +
-                'gps: ' + escapeHtml(p.gps_timestamp) + '<br/>' +
-                'diff: ' + p.diff_seconds + 's<br/>' +
-                'est lat: ' + p.estimated_latitude + '<br/>' +
-                'est lon: ' + p.estimated_longitude
-              );
+              L.marker(pos, { icon: estIcon })
+                .addTo(estLayer).bindPopup(
+                  '<b>⚡ Sin GPS (posición estimada)</b><br/>' +
+                  'gps: ' + escapeHtml(p.gps_timestamp) + '<br/>' +
+                  'diff: ' + p.diff_seconds + 's<br/>' +
+                  'est lat: ' + p.estimated_latitude + '<br/>' +
+                  'est lon: ' + p.estimated_longitude
+                );
             });
 
             // --- 4. Puentes de gaps por anomalías (línea punteada roja) ---
@@ -2430,7 +2557,9 @@ function App() {
               ];
               allBounds.push(...bridgeLl);
               const cat = { salto_sospechoso: '⚠ Salto sospechoso', apagado_en_reposo: '⚠ Apagado en reposo', sin_cobertura: 'Sin cobertura' }[a.category] || a.category;
-              const color = a.category === 'sin_cobertura' ? '#f97316' : '#dc2626';
+              const color = a.category === 'sin_cobertura' ? '#8b5cf6'
+                          : a.category === 'apagado_en_reposo' ? '#991b1b'
+                          : '#dc2626';
               L.polyline(bridgeLl, { color, weight: 2.5, opacity: 0.8, dashArray: '10,6' })
                 .addTo(lossLayer)
                 .bindPopup(
@@ -2444,9 +2573,11 @@ function App() {
               // Midpoint marker
               const midLat = (pb.latitude + pa.latitude) / 2;
               const midLon = (pb.longitude + pa.longitude) / 2;
+              const textColor   = a.category === 'sin_cobertura' ? '#2e1065' : '#fff';
+              const borderColor = a.category === 'sin_cobertura' ? '#4c1d95' : '#7f1d1d';
               const lossIcon = L.divIcon({
                 className: '',
-                html: '<div style="background:' + color + ';color:#fff;border:2px solid #7f1d1d;border-radius:12px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap;">⚡ ' + a.duration_minutes.toFixed(0) + 'min</div>',
+                html: '<div style="background:' + color + ';color:' + textColor + ';border:2px solid ' + borderColor + ';border-radius:12px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap;">⚡ ' + a.duration_minutes.toFixed(0) + 'min</div>',
                 iconAnchor: [30, 10],
               });
               L.marker([midLat, midLon], { icon: lossIcon }).addTo(lossLayer);
@@ -2459,13 +2590,13 @@ function App() {
               d.style.cssText = 'background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:8px 12px;font-size:12px;line-height:1.8;min-width:200px;';
               d.innerHTML =
                 '<b>Leyenda cobertura GPS</b><br/>' +
-                '<span style="color:#2563eb">━━</span> Tramo con GPS real<br/>' +
-                '<span style="color:#f97316">┄┄</span> Brecha sin cobertura<br/>' +
-                '<span style="color:#dc2626">┄┄</span> Salto sospechoso / apagado<br/>' +
-                '🔵 Punto GPS real<br/>' +
-                '🟠 GPS real dentro de pérdida<br/>' +
-                '🟡 Posición estimada (sin GPS)<br/>' +
-                '⚡ Etiqueta de zona sin cobertura';
+                '<span style="color:#8b5cf6">━━</span> Tramo con GPS real<br/>' +
+                '<span style="color:#8b5cf6">┄┄</span> Brecha sin cobertura<br/>' +
+                '<span style="color:#dc2626">┄┄</span> Salto sospechoso<br/>' +
+                '<span style="color:#991b1b">┄┄</span> Apagado en reposo<br/>' +
+                '<span style="color:#06b6d4">●</span> Punto GPS real<br/>' +
+                '<span style="color:#8b5cf6">⚡</span> GPS dentro de pérdida<br/>' +
+                '<span style="color:#ec4899">⚡</span> Posición estimada (sin GPS)';
               return d;
             };
             legend.addTo(map);
@@ -2705,134 +2836,246 @@ function App() {
       return
     }
 
+    // Build route GPS polyline from selected route records
+    const selectedRoute = expandedRouteIndex !== null
+      ? routeDetection?.complete_routes?.[expandedRouteIndex]
+      : null
+    const routePoints = selectedRoute
+      ? getRouteIntervalRecords(selectedRoute)
+          .filter((r) => r.latitude != null && r.longitude != null &&
+                         Number.isFinite(Number(r.latitude)) && Number.isFinite(Number(r.longitude)))
+          .map((r) => [Number(r.latitude), Number(r.longitude)])
+      : []
+
     const safeStops = JSON.stringify(stops).replaceAll('</', String.raw`<\/`)
-    const title = `Paradas — assetId=${stopsData.asset_id} clientId=${stopsData.client_id}`
+    const safeRoute = JSON.stringify(routePoints).replaceAll('</', String.raw`<\/`)
+    const routeLabel = selectedRoute
+      ? ` · Ruta #${expandedRouteIndex + 1} (${selectedRoute.start_timestamp?.slice(0, 10) ?? ''})`
+      : ''
+    const title = `Paradas — assetId=${stopsData.asset_id} clientId=${stopsData.client_id}${routeLabel}`
 
-    const html = `
-      <!doctype html>
-      <html lang="es">
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>${title}</title>
-          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-          <style>
-            html, body { margin: 0; padding: 0; height: 100%; font-family: Inter, system-ui, sans-serif; background: #f8fafc; }
-            #map { width: 100%; height: calc(100% - 52px); }
-            .header {
-              height: 52px; display: flex; align-items: center; justify-content: space-between;
-              padding: 0 16px; border-bottom: 1px solid #e2e8f0; background: #fff; font-size: 13px; color: #0f172a;
-            }
-            .legend {
-              position: absolute; bottom: 24px; right: 10px; z-index: 1000;
-              background: #ffffffee; border: 1px solid #e2e8f0; border-radius: 8px;
-              padding: 10px 14px; font-size: 12px; line-height: 1.8;
-            }
-            .legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <strong>${title}</strong>
-            <span>${stops.length} paradas · ${stopsData.total_stop_minutes.toFixed(1)} min detenido</span>
-          </div>
-          <div id="map"></div>
+    const html = `<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${title}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;font-family:Inter,system-ui,sans-serif;display:flex;flex-direction:column;}
+#app{display:flex;flex:1;overflow:hidden;}
+#sidebar{width:300px;min-width:200px;display:flex;flex-direction:column;border-right:1px solid #e2e8f0;background:#fff;}
+#map{flex:1;}
+.hdr{padding:10px 12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;}
+.hdr h1{font-size:13px;font-weight:700;color:#0f172a;margin-bottom:2px;}
+.hdr p{font-size:11px;color:#64748b;}
+.controls{padding:8px 10px;border-bottom:1px solid #e2e8f0;display:flex;flex-direction:column;gap:5px;}
+.controls label{font-size:11px;color:#475569;display:flex;align-items:center;gap:5px;cursor:pointer;}
+#stop-list{flex:1;overflow-y:auto;}
+.stop-item{padding:7px 10px;border-bottom:1px solid #f1f5f9;cursor:pointer;display:flex;align-items:flex-start;gap:8px;}
+.stop-item:hover{background:#f0f9ff;}
+.stop-item.active{background:#eff6ff;border-left:3px solid #2563eb;}
+.stop-item.far{opacity:0.45;}
+.dist-badge{font-size:10px;padding:1px 5px;border-radius:8px;font-weight:600;white-space:nowrap;flex-shrink:0;}
+.dist-ok{background:#dcfce7;color:#15803d;}
+.dist-warn{background:#fef9c3;color:#92400e;}
+.dist-far{background:#fee2e2;color:#991b1b;}
+.stop-name{font-size:12px;color:#0f172a;line-height:1.3;}
+.stop-meta{font-size:10px;color:#94a3b8;margin-top:2px;}
+</style>
+</head><body>
+<div id="app">
+  <div id="sidebar">
+    <div class="hdr">
+      <h1>${title}</h1>
+      <p>${stops.length} paradas · ${stopsData.total_stop_minutes.toFixed(1)} min detenido</p>
+    </div>
+    <div class="controls">
+      <label><input type="checkbox" id="chk-far" checked onchange="toggleFar()"/> Mostrar paradas lejanas (>500 m)</label>
+      <label><input type="checkbox" id="chk-lines" checked onchange="toggleLines()"/> Mostrar líneas conectoras</label>
+    </div>
+    <div id="stop-list"></div>
+  </div>
+  <div id="map"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+const stops    = ${safeStops};
+const routePts = ${safeRoute};
 
-          <script
-            src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-            crossorigin=""
-          ></script>
-          <script>
-            const stops = ${safeStops};
+const CAT_COLORS = {
+  gasolinera:'#f59e0b',hotel:'#8b5cf6',restaurante:'#22c55e',
+  tienda_conveniencia:'#3b82f6',farmacia:'#06b6d4',hospital:'#0891b2',
+  taller_mecanico:'#78716c',terminal_carga:'#6366f1',motor_apagado:'#64748b',
+  ralenti:'#94a3b8',parada_no_autorizada:'#ef4444',estacionamiento_prolongado:'#f97316',
+  pernocta_fuera_de_base:'#dc2626',parada_larga:'#b45309',parada_en_geocerca:'#0ea5e9',
+  punto_de_control:'#10b981',entrega:'#10b981',en_carretera:'#78716c',parada_en_carretera:'#94a3b8',
+};
+const CAT_ICONS = {
+  gasolinera:'⛽',hotel:'🏨',restaurante:'🍽',tienda_conveniencia:'🏪',farmacia:'💊',
+  hospital:'🏥',taller_mecanico:'🔧',terminal_carga:'🏭',motor_apagado:'🔌',ralenti:'⏳',
+  parada_no_autorizada:'⛔',estacionamiento_prolongado:'🅿',pernocta_fuera_de_base:'🌙',
+  parada_larga:'⏸',parada_en_geocerca:'📍',punto_de_control:'✅',entrega:'📦',
+  en_carretera:'🛣',parada_en_carretera:'🛣',
+};
 
-            const CAT_COLORS = {
-              gasolinera:                '#f59e0b',
-              hotel:                     '#8b5cf6',
-              restaurante:               '#22c55e',
-              tienda_conveniencia:       '#3b82f6',
-              farmacia:                  '#06b6d4',
-              hospital:                  '#0891b2',
-              taller_mecanico:           '#78716c',
-              terminal_carga:            '#6366f1',
-              motor_apagado:             '#64748b',
-              ralenti:                   '#94a3b8',
-              parada_no_autorizada:      '#ef4444',
-              estacionamiento_prolongado:'#f97316',
-              pernocta_fuera_de_base:    '#dc2626',
-              parada_larga:              '#b45309',
-              parada_en_geocerca:        '#0ea5e9',
-              punto_de_control:          '#10b981',
-              entrega:                   '#10b981',
-              en_carretera:              '#78716c',
-              parada_en_carretera:       '#94a3b8',
-            };
+const fmtTs = (v) => {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d)?v:d.toLocaleString('es-MX',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+};
 
-            const fmtTs = (v) => {
-              if (!v) return '—';
-              const d = new Date(v);
-              return isNaN(d) ? v : d.toLocaleString('es-MX', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
-            };
+const haversinM = (a, b) => {
+  const R=6371000, dLat=(b[0]-a[0])*Math.PI/180, dLon=(b[1]-a[1])*Math.PI/180;
+  const s=Math.sin(dLat/2)**2+Math.cos(a[0]*Math.PI/180)*Math.cos(b[0]*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));
+};
 
-            const map = L.map('map');
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-              attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-              maxZoom: 19,
-            }).addTo(map);
+const nearestRoutePoint = (lat, lon) => {
+  if (!routePts.length) return null;
+  let min=Infinity, best=null;
+  for (const p of routePts) { const d=haversinM([lat,lon],p); if(d<min){min=d;best=p;} }
+  return {dist:min, point:best};
+};
 
-            const markers = [];
-            stops.forEach((s, i) => {
-              const color = CAT_COLORS[s.final_category] || '#94a3b8';
-              const radius = Math.max(8, Math.min(30, Math.sqrt(s.duration_minutes) * 1.5));
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 
-              const marker = L.circleMarker([s.latitude, s.longitude], {
-                radius,
-                color: '#fff',
-                weight: 2,
-                fillColor: color,
-                fillOpacity: 0.85,
-              }).addTo(map);
+if (routePts.length >= 2) {
+  L.polyline(routePts,{color:'#8b5cf6',weight:3,opacity:0.7}).addTo(map).bindTooltip('Ruta GPS',{sticky:true});
+  L.circleMarker(routePts[0],{radius:7,color:'#14532d',weight:2,fillColor:'#22c55e',fillOpacity:.95}).addTo(map).bindPopup('<b>Inicio de ruta</b>');
+  L.circleMarker(routePts[routePts.length-1],{radius:7,color:'#7f1d1d',weight:2,fillColor:'#ef4444',fillOpacity:.95}).addTo(map).bindPopup('<b>Fin de ruta</b>');
+}
 
-              const label = s.final_category.replace(/_/g, ' ');
-              const place = s.nearby_place ? '<br><b>Lugar:</b> ' + s.nearby_place : '';
-              const evCat = s.event_type_category ? '<br><b>Evento:</b> ' + s.event_type_category.replace(/_/g, ' ') : '';
+// Build stop data with distance
+const stopData = stops.map((s,i) => {
+  const nr = nearestRoutePoint(s.latitude, s.longitude);
+  return { s, i, nr, distM: nr ? nr.dist : null };
+});
 
-              marker.bindPopup(
-                '<b>Parada #' + (i + 1) + '</b><br>' +
-                '<b>Categoría:</b> <span style="color:' + color + ';font-weight:600">' + label + '</span><br>' +
-                '<b>Duración:</b> ' + s.duration_minutes.toFixed(1) + ' min<br>' +
-                '<b>Inicio:</b> ' + fmtTs(s.start_timestamp) + '<br>' +
-                '<b>Fin:</b> ' + fmtTs(s.end_timestamp) + '<br>' +
-                '<b>Registros:</b> ' + s.num_records +
-                evCat + place + '<br>' +
-                '<b>Confianza:</b> ' + s.confidence + '<br>' +
-                '<b>Coords:</b> ' + s.latitude.toFixed(5) + ', ' + s.longitude.toFixed(5),
-                { maxWidth: 280 }
-              );
+// Connector lines layer
+const linesLayer = L.layerGroup().addTo(map);
+const markersLayer = L.layerGroup().addTo(map);
+let activeStop = null;
 
-              marker.bindTooltip('#' + (i + 1) + ' · ' + s.duration_minutes.toFixed(0) + ' min · ' + label, { direction: 'top' });
-              markers.push(marker);
-            });
+const borderColor = (d) => d===null?'#fff':d<100?'#16a34a':d<500?'#f59e0b':'#dc2626';
+const distClass   = (d) => d===null?'dist-ok':d<100?'dist-ok':d<500?'dist-warn':'dist-far';
+const distLabel   = (d) => d===null?'—':d<100?Math.round(d)+'m ✓':d<500?Math.round(d)+'m':(d/1000).toFixed(2)+'km ⚠';
 
-            if (markers.length > 0) {
-              const group = L.featureGroup(markers);
-              map.fitBounds(group.getBounds().pad(0.15));
-            }
+const markerRefs = [];
+const lineRefs   = [];
 
-            // Leyenda
-            const usedCats = [...new Set(stops.map((s) => s.final_category))];
-            const legDiv = L.DomUtil.create('div', 'legend');
-            legDiv.innerHTML = '<b>Categoría</b><br>' +
-              usedCats.map((cat) =>
-                '<span class="legend-dot" style="background:' + (CAT_COLORS[cat] || '#94a3b8') + '"></span>' +
-                cat.replace(/_/g, ' ')
-              ).join('<br>');
-            document.getElementById('map').appendChild(legDiv);
-          </script>
-        </body>
-      </html>
-    `
+stopData.forEach(({s, i, nr, distM}) => {
+  const color = CAT_COLORS[s.final_category] || '#94a3b8';
+  const icon  = CAT_ICONS[s.final_category]  || '📌';
+  const size  = Math.max(28, Math.min(52, Math.sqrt(s.duration_minutes)*3));
+  const fs    = Math.max(11, Math.min(20, size*0.45));
+  const bc    = borderColor(distM);
+
+  const divIcon = L.divIcon({
+    className:'',
+    html: '<div style="background:'+color+';border:3px solid '+bc+';border-radius:50%;'+
+          'width:'+size+'px;height:'+size+'px;display:flex;align-items:center;justify-content:center;'+
+          'font-size:'+fs+'px;box-shadow:0 2px 8px rgba(0,0,0,0.35);cursor:pointer;">'+icon+'</div>',
+    iconSize:[size,size],iconAnchor:[size/2,size/2],popupAnchor:[0,-(size/2+4)],
+  });
+
+  const marker = L.marker([s.latitude,s.longitude],{icon:divIcon}).addTo(markersLayer);
+
+  const label  = s.final_category.replace(/_/g,' ');
+  const place  = s.nearby_place?'<br><b>Lugar OSM:</b> '+s.nearby_place:'';
+  const evCat  = s.event_type_category?'<br><b>Evento:</b> '+s.event_type_category.replace(/_/g,' '):'';
+  const distTx = distM===null?'':
+    distM<100 ?'<br><b>Dist. a ruta:</b> <span style="color:#16a34a">'+Math.round(distM)+' m ✓</span>':
+    distM<500 ?'<br><b>Dist. a ruta:</b> <span style="color:#d97706">'+Math.round(distM)+' m</span>':
+               '<br><b>Dist. a ruta:</b> <span style="color:#dc2626">'+(distM/1000).toFixed(2)+' km ⚠</span>';
+
+  marker.bindPopup(
+    '<b>'+icon+' Parada #'+(i+1)+'</b><br>'+
+    '<b>Categoría:</b> <span style="color:'+color+';font-weight:700">'+label+'</span><br>'+
+    '<b>Duración:</b> '+s.duration_minutes.toFixed(1)+' min<br>'+
+    '<b>Inicio:</b> '+fmtTs(s.start_timestamp)+'<br>'+
+    '<b>Fin:</b> '+fmtTs(s.end_timestamp)+'<br>'+
+    '<b>Registros:</b> '+s.num_records+evCat+place+distTx+'<br>'+
+    '<b>Confianza:</b> '+s.confidence+'<br>'+
+    '<b>Coords:</b> '+s.latitude.toFixed(5)+', '+s.longitude.toFixed(5),
+    {maxWidth:280}
+  );
+  marker.bindTooltip(icon+' #'+(i+1)+' · '+s.duration_minutes.toFixed(0)+' min · '+label+(distM&&distM>=500?' · '+(distM/1000).toFixed(1)+'km ⚠':''),{direction:'top'});
+
+  // Connector line to nearest route point
+  let line = null;
+  if (nr && nr.point) {
+    const lineColor = distM<100?'#16a34a':distM<500?'#f59e0b':'#dc2626';
+    line = L.polyline([[s.latitude,s.longitude],nr.point],{
+      color:lineColor, weight:1.5, opacity:0.7, dashArray:'5,4'
+    }).addTo(linesLayer);
+  }
+
+  markerRefs.push({marker, distM, el:null});
+  lineRefs.push(line);
+
+  marker.on('click', () => selectStop(i));
+});
+
+// Sidebar list
+function buildList() {
+  const list = document.getElementById('stop-list');
+  list.innerHTML = '';
+  const showFar = document.getElementById('chk-far').checked;
+  stopData.forEach(({s,i,distM}) => {
+    if (!showFar && distM !== null && distM >= 500) return;
+    const icon = CAT_ICONS[s.final_category]||'📌';
+    const color = CAT_COLORS[s.final_category]||'#94a3b8';
+    const el = document.createElement('div');
+    el.className = 'stop-item'+(i===activeStop?' active':'')+(distM&&distM>=500?' far':'');
+    el.dataset.idx = i;
+    el.innerHTML =
+      '<span style="font-size:18px;flex-shrink:0">'+icon+'</span>'+
+      '<div style="flex:1;min-width:0">'+
+        '<div class="stop-name" style="color:'+color+'">#'+(i+1)+' '+s.final_category.replace(/_/g,' ')+'</div>'+
+        '<div class="stop-meta">'+s.duration_minutes.toFixed(0)+' min</div>'+
+      '</div>'+
+      '<span class="dist-badge '+distClass(distM)+'">'+distLabel(distM)+'</span>';
+    el.onclick = () => selectStop(i);
+    list.appendChild(el);
+    markerRefs[i].el = el;
+  });
+}
+
+function selectStop(idx) {
+  activeStop = idx;
+  const {s, nr, distM} = stopData[idx];
+  map.setView([s.latitude,s.longitude],15);
+  markerRefs[idx].marker.openPopup();
+  document.querySelectorAll('.stop-item').forEach(el => el.classList.toggle('active', Number(el.dataset.idx)===idx));
+}
+
+function toggleFar() {
+  const showFar = document.getElementById('chk-far').checked;
+  stopData.forEach(({distM},i) => {
+    const isFar = distM !== null && distM >= 500;
+    if (isFar) {
+      if (showFar) { markerRefs[i].marker.addTo(markersLayer); if(lineRefs[i]) lineRefs[i].addTo(linesLayer); }
+      else         { markersLayer.removeLayer(markerRefs[i].marker); if(lineRefs[i]) linesLayer.removeLayer(lineRefs[i]); }
+    }
+  });
+  buildList();
+}
+
+function toggleLines() {
+  if (document.getElementById('chk-lines').checked) map.addLayer(linesLayer);
+  else map.removeLayer(linesLayer);
+}
+
+buildList();
+
+const allPts = stopData.map(d=>[d.s.latitude,d.s.longitude]);
+if (allPts.length) map.fitBounds(L.latLngBounds([...allPts,...routePts.slice(0,50)]),{padding:[20,20]});
+else if (routePts.length) map.fitBounds(L.latLngBounds(routePts),{padding:[20,20]});
+else map.setView([23.6,-102.5],5);
+</script></body></html>`
 
     const blob = new Blob([html], { type: 'text/html' })
     const blobUrl = URL.createObjectURL(blob)
@@ -3124,10 +3367,10 @@ function App() {
               </div>
             </div>
             <div class="legend">
-              <span class="legend-item"><span class="legend-swatch" style="background:#f97316"></span>Ruta ML inferida</span>
-              <span class="legend-item"><span class="legend-swatch" style="background:#1d4ed8"></span>Ruta real (línea)</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#22c55e"></span>Ruta ML inferida</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#8b5cf6"></span>Ruta real GPS</span>
               <span class="legend-item"><span class="legend-swatch-point" style="background:#06b6d4"></span>Puntos GPS</span>
-              <span class="legend-item"><span class="legend-swatch-point" style="background:#f59e0b"></span>Puntos GPS calculados</span>
+              <span class="legend-item"><span class="legend-swatch-point" style="background:#8b5cf6"></span>Puntos perdidos</span>
             </div>
           </div>
           <div id="map"></div>
@@ -3263,7 +3506,7 @@ function App() {
             const allPoints = [];
             if (Array.isArray(predictedRoutePoints) && predictedRoutePoints.length >= 2) {
               const predictedLine = L.polyline(predictedRoutePoints, {
-                color: '#f97316',
+                color: '#22c55e',
                 weight: 5,
                 opacity: 0.95,
               }).addTo(mlRoutesLayer);
@@ -3278,7 +3521,7 @@ function App() {
               }
 
               const line = L.polyline(segmentLatLngs, {
-                color: '#f97316',
+                color: '#22c55e',
                 weight: 4,
                 opacity: 0.9,
               }).addTo(mlRoutesLayer);
@@ -3295,7 +3538,7 @@ function App() {
 
             if (Array.isArray(actualPoints) && actualPoints.length >= 2) {
               const actualLine = L.polyline(actualPoints, {
-                color: '#1d4ed8',
+                color: '#8b5cf6',
                 weight: 3,
                 opacity: 0.95,
                 dashArray: '7,5',
@@ -3314,13 +3557,22 @@ function App() {
 
                 const isEstimated = Boolean(point?.is_estimated);
 
-                const marker = L.circleMarker([latitude, longitude], {
-                  radius: isEstimated ? 4 : 3,
-                  color: isEstimated ? '#92400e' : '#0f766e',
-                  weight: 1,
-                  fillColor: isEstimated ? '#f59e0b' : '#06b6d4',
-                  fillOpacity: 0.9,
-                }).addTo(gpsPointsLayer);
+                const lostIcon = L.divIcon({
+                  className: '',
+                  html: '<div style="background:#8b5cf6;color:#fff;border:2px solid #4c1d95;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
+                  iconSize: [14, 14],
+                  iconAnchor: [7, 7],
+                });
+
+                const marker = isEstimated
+                  ? L.marker([latitude, longitude], { icon: lostIcon }).addTo(gpsPointsLayer)
+                  : L.circleMarker([latitude, longitude], {
+                      radius: 3,
+                      color: '#0f766e',
+                      weight: 1,
+                      fillColor: '#06b6d4',
+                      fillOpacity: 0.9,
+                    }).addTo(gpsPointsLayer);
 
                 marker.bindPopup(
                   '<b>' + (isEstimated ? 'Punto GPS calculado' : 'Punto GPS') + '</b><br/>' +
@@ -3578,6 +3830,273 @@ function App() {
     } catch (err) {
       setError(err.message)
     }
+  }
+
+  const openRoadCovMapWindow = async () => {
+    if (!roadCovMatch) { setError('Primero calcula la cobertura por carretera.'); return }
+    setError('')
+
+    const roadIndex = {}
+    for (const r of roadCovMatch.roads) roadIndex[r.name] = r
+
+    let roadRows = []
+    try {
+      const res = await fetch(`${API_BASE}/data/carreteras/rows?limit=2000&offset=0`)
+      if (!res.ok) throw new Error('No se pudieron cargar las geometrías')
+      const d = await res.json()
+      roadRows = Array.isArray(d.rows) ? d.rows : []
+    } catch (e) { setError(e.message); return }
+
+    const segments = roadRows.flatMap((row, idx) => {
+      const latlngs = parseLinestringWkt(row.geometry)
+      if (latlngs.length < 2) return []
+      const stats = roadIndex[row.name] || null
+      return [{ id: idx, name: row.name || '', stats, latlngs }]
+    })
+
+    if (segments.length === 0) { setError('Sin geometrías válidas.'); return }
+
+    const mapWindow = window.open('', '_blank', 'width=1500,height=920')
+    if (!mapWindow) { setError('El navegador bloqueó el popup. Permite pop-ups para este sitio.'); return }
+
+    const structural = globalCovData?.structural_hotspots ?? []
+    const isolated   = globalCovData?.isolated_hotspots   ?? []
+
+    const safeSegs  = JSON.stringify(segments).replaceAll('</', String.raw`<\/`)
+    const safeStruc = JSON.stringify(structural).replaceAll('</', String.raw`<\/`)
+    const safeIsol  = JSON.stringify(isolated).replaceAll('</', String.raw`<\/`)
+    const totalAffected = roadCovMatch.roads_with_issues
+    const totalRoads    = roadCovMatch.total_roads_analyzed
+
+    const html = `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"/>
+<title>Cobertura GPS — carreteras</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;font-family:Inter,system-ui,sans-serif;display:flex;flex-direction:column;}
+#app{display:flex;flex:1;overflow:hidden;}
+#sidebar{width:320px;min-width:220px;display:flex;flex-direction:column;border-right:1px solid #e5e7eb;background:#fff;}
+#map{flex:1;}
+.hdr{padding:10px 12px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;}
+.hdr h1{font-size:13px;font-weight:700;color:#111827;margin-bottom:4px;}
+.hdr p{font-size:11px;color:#6b7280;}
+.controls{padding:8px 10px;border-bottom:1px solid #e5e7eb;display:flex;flex-direction:column;gap:6px;}
+.controls select,.controls input{width:100%;padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;}
+.btn-all{padding:5px 10px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600;}
+.btn-all:hover{background:#1d4ed8;}
+#road-list{flex:1;overflow-y:auto;}
+.road-item{padding:8px 10px;border-bottom:1px solid #f3f4f6;cursor:pointer;display:flex;align-items:flex-start;gap:8px;}
+.road-item:hover{background:#f0f9ff;}
+.road-item.active{background:#eff6ff;border-left:3px solid #2563eb;}
+.road-name{font-size:12px;color:#111827;line-height:1.3;flex:1;}
+.road-meta{font-size:10px;color:#9ca3af;margin-top:2px;}
+.sev-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:2px;}
+.badge{display:inline-block;border-radius:8px;padding:1px 7px;font-size:10px;font-weight:600;}
+</style></head><body>
+<div id="app">
+  <div id="sidebar">
+    <div class="hdr">
+      <h1>Carreteras — cobertura GPS</h1>
+      <p>${totalAffected} afectadas · ${totalRoads} analizadas</p>
+    </div>
+    <div class="controls">
+      <button class="btn-all" onclick="showAll()">Ver todas las carreteras</button>
+      <select id="sev-filter" onchange="applyFilter()">
+        <option value="all">Todas las severidades</option>
+        <option value="alta">🔴 Alta (≥10 zonas)</option>
+        <option value="media">🟠 Media (3–9 zonas)</option>
+        <option value="baja">🔵 Baja (1–2 zonas)</option>
+        <option value="aislada">⚫ Solo eventos aislados</option>
+        <option value="ok">✅ Sin problemas</option>
+      </select>
+      <input id="search" type="text" placeholder="Buscar carretera…" oninput="applyFilter()"/>
+    </div>
+    <div id="road-list"></div>
+  </div>
+  <div id="map"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+const segments   = ${safeSegs};
+const structural = ${safeStruc};
+const isolated   = ${safeIsol};
+
+const SEV_COLOR  = { alta:'#dc2626', media:'#d97706', baja:'#2563eb', aislada:'#9ca3af', ok:'#22c55e' };
+const SEV_WEIGHT = { alta:4.5, media:3.5, baja:3, aislada:2, ok:1.5 };
+const SEV_DOT_COLOR = { alta:'#dc2626', media:'#f97316', baja:'#2563eb', aislada:'#9ca3af', ok:'#22c55e' };
+
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+
+// Build road → polylines index (one road can have multiple segments)
+const roadPolylines = {};   // roadName → [polyline, ...]
+const allPolylines  = [];
+const allBounds     = [];
+
+segments.forEach(seg => {
+  const sev = seg.stats ? seg.stats.severity : 'ok';
+  const color  = SEV_COLOR[sev]  || '#d1d5db';
+  const weight = SEV_WEIGHT[sev] || 1.5;
+
+  const popup = seg.stats
+    ? '<b>' + seg.name + '</b><br/>'
+      + 'Severidad: <b style="color:' + color + '">' + sev + '</b><br/>'
+      + '⛔ Zonas sin cobertura: <b>' + seg.stats.structural_zones + '</b><br/>'
+      + '⚡ Eventos aislados: <b>' + seg.stats.isolated_events + '</b><br/>'
+      + 'Eventos GPS perdidos: <b>' + seg.stats.total_events.toLocaleString() + '</b><br/>'
+      + 'Tipo: ' + (seg.stats.p_type || seg.stats.tipo || '—')
+    : '<b>' + seg.name + '</b><br/><span style="color:#16a34a">✅ Sin problemas de cobertura</span>';
+
+  const line = L.polyline(seg.latlngs, { color, weight, opacity: sev === 'ok' ? 0.4 : 0.85 })
+    .bindPopup(popup);
+  line.addTo(map);
+  line._roadName = seg.name;
+  line._sev = sev;
+
+  if (!roadPolylines[seg.name]) roadPolylines[seg.name] = [];
+  roadPolylines[seg.name].push(line);
+  allPolylines.push(line);
+  seg.latlngs.forEach(p => allBounds.push(p));
+});
+
+// ── Hotspot markers — stored with lat/lon for road filtering ─────────────────
+const MATCH_DEG = 0.02; // ~2 km match radius
+const layerStruc = L.layerGroup().addTo(map);
+const layerIsol  = L.layerGroup().addTo(map);
+const strucMarkers = []; // {marker, lat, lon}
+const isolMarkers  = [];
+
+structural.forEach(h => {
+  const r = Math.min(18, 4 + h.asset_count * 1.2);
+  const m = L.circleMarker([h.lat,h.lon],{radius:r,color:'#dc2626',fillColor:'#fca5a5',fillOpacity:0.7,weight:1.5})
+    .bindPopup('<b>⛔ Zona sin cobertura</b><br/>Assets: <b>'+h.asset_count+'</b><br/>Clientes: '+h.client_count+'<br/>Eventos: '+h.event_count);
+  m.addTo(layerStruc);
+  strucMarkers.push({marker:m, lat:h.lat, lon:h.lon});
+});
+isolated.forEach(h => {
+  const m = L.circleMarker([h.lat,h.lon],{radius:5,color:'#d97706',fillColor:'#fde68a',fillOpacity:0.7,weight:1})
+    .bindPopup('<b>⚡ Evento aislado</b><br/>Asset: '+(h.asset_ids?.[0]||'—')+'<br/>Eventos: '+h.event_count);
+  m.addTo(layerIsol);
+  isolMarkers.push({marker:m, lat:h.lat, lon:h.lon});
+});
+L.control.layers(null,{'⛔ Hotspots sin cobertura':layerStruc,'⚡ Eventos aislados':layerIsol},{collapsed:false}).addTo(map);
+
+if (allBounds.length) map.fitBounds(L.latLngBounds(allBounds),{padding:[20,20]});
+else map.setView([23.6,-102.5],5);
+
+// Check if a hotspot is near any point of the selected road (within MATCH_DEG)
+function hotspotNearRoad(hLat, hLon, roadPoints) {
+  return roadPoints.some(p => Math.abs(p.lat - hLat) < MATCH_DEG && Math.abs(p.lng - hLon) < MATCH_DEG);
+}
+
+// ── Sidebar road list ───────────────────────────────────────────────────────
+const roadMap = {};
+segments.forEach(seg => {
+  if (!roadMap[seg.name]) roadMap[seg.name] = { name: seg.name, stats: seg.stats, sev: seg.stats ? seg.stats.severity : 'ok' };
+});
+const SEV_ORDER = { alta:0, media:1, baja:2, aislada:3, ok:4 };
+const allRoads = Object.values(roadMap).sort((a,b) => (SEV_ORDER[a.sev]??5) - (SEV_ORDER[b.sev]??5) || a.name.localeCompare(b.name));
+
+let activeRoad = null;
+
+function renderList(roads) {
+  const list = document.getElementById('road-list');
+  list.innerHTML = '';
+  roads.forEach(road => {
+    const el = document.createElement('div');
+    el.className = 'road-item' + (road.name === activeRoad ? ' active' : '');
+    el.dataset.name = road.name;
+    const dotColor = SEV_DOT_COLOR[road.sev] || '#d1d5db';
+    const meta = road.stats
+      ? road.stats.structural_zones + ' zonas · ' + road.stats.isolated_events + ' aislados · ' + road.stats.total_events.toLocaleString() + ' eventos'
+      : 'Sin problemas de cobertura';
+    el.innerHTML =
+      '<div class="sev-dot" style="background:' + dotColor + '"></div>'
+      + '<div><div class="road-name">' + road.name + '</div><div class="road-meta">' + meta + '</div></div>';
+    el.onclick = () => selectRoad(road.name);
+    list.appendChild(el);
+  });
+}
+
+function applyFilter() {
+  const sev   = document.getElementById('sev-filter').value;
+  const query = document.getElementById('search').value.toLowerCase();
+  const filtered = allRoads.filter(r =>
+    (sev === 'all' || r.sev === sev) &&
+    (!query || r.name.toLowerCase().includes(query))
+  );
+  renderList(filtered);
+}
+
+function selectRoad(name) {
+  activeRoad = name;
+
+  // Dim all roads, highlight selected
+  allPolylines.forEach(line => {
+    const isMatch = line._roadName === name;
+    line.setStyle({ opacity: isMatch ? 1 : 0.07, weight: isMatch ? (SEV_WEIGHT[line._sev]||2) + 1 : 1 });
+    if (isMatch) line.bringToFront();
+  });
+
+  // Collect all points of the selected road for distance checks
+  const polys = roadPolylines[name] || [];
+  const roadPoints = polys.flatMap(p => p.getLatLngs());
+
+  // Filter hotspot markers: show only those near this road
+  layerStruc.clearLayers();
+  layerIsol.clearLayers();
+  let hasHotspots = false;
+  strucMarkers.forEach(({marker, lat, lon}) => {
+    if (hotspotNearRoad(lat, lon, roadPoints)) {
+      marker.addTo(layerStruc);
+      hasHotspots = true;
+    }
+  });
+  isolMarkers.forEach(({marker, lat, lon}) => {
+    if (hotspotNearRoad(lat, lon, roadPoints)) {
+      marker.addTo(layerIsol);
+      hasHotspots = true;
+    }
+  });
+
+  // Zoom to road bounds
+  if (roadPoints.length) {
+    map.fitBounds(L.latLngBounds(roadPoints), { padding: [40, 40], maxZoom: 14 });
+  }
+
+  // Sidebar highlight
+  document.querySelectorAll('.road-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.name === name);
+  });
+}
+
+function showAll() {
+  activeRoad = null;
+
+  // Restore all road styles
+  allPolylines.forEach(line => {
+    const sev = line._sev;
+    line.setStyle({ opacity: sev === 'ok' ? 0.4 : 0.85, weight: SEV_WEIGHT[sev] || 1.5 });
+  });
+
+  // Restore all hotspot markers
+  layerStruc.clearLayers();
+  layerIsol.clearLayers();
+  strucMarkers.forEach(({marker}) => marker.addTo(layerStruc));
+  isolMarkers.forEach(({marker}) => marker.addTo(layerIsol));
+
+  if (allBounds.length) map.fitBounds(L.latLngBounds(allBounds), { padding: [20, 20] });
+  document.querySelectorAll('.road-item').forEach(el => el.classList.remove('active'));
+}
+
+renderList(allRoads);
+</script></body></html>`
+
+    mapWindow.document.write(html)
+    mapWindow.document.close()
   }
 
   return (
@@ -4068,6 +4587,182 @@ function App() {
         </section>
       )}
 
+      {activeMenu === 'resumen' && (
+        <section className="card">
+          <h2>Análisis histórico de paradas — flota completa</h2>
+          <p className="subtitle">
+            Detecta paradas en <strong>todos los clientes y assets</strong> del dataset usando DuckDB,
+            clasifica con OpenStreetMap (gasolinera, hotel, restaurante…) y agrega por categoría y ubicación.
+            Tiempo estimado: ~30-40 minutos. Se ejecuta una vez y queda cacheado.
+          </p>
+
+          <div className="toolbar" style={{ marginBottom: 12 }}>
+            <button onClick={() => startBatchStopsJob(false)} disabled={batchStopsJob?.phase === 'running'}>
+              {batchStopsJob?.phase === 'running' ? 'Calculando…' : 'Calcular análisis completo'}
+            </button>
+            {batchStops && (
+              <button onClick={() => startBatchStopsJob(true)} disabled={batchStopsJob?.phase === 'running'}
+                style={{ fontSize: 13 }}>
+                ↺ Recalcular todo
+              </button>
+            )}
+            {batchStops && (
+              <button onClick={() => {
+                const locs = batchStops.top_hotspots?.slice(0, 100) || []
+                if (!locs.length) return
+                const mw = window.open('', '_blank', 'width=1280,height=860')
+                if (!mw) { setError('El navegador bloqueó el popup.'); return }
+                const CAT_COLORS_MAP = {gasolinera:'#f59e0b',hotel:'#8b5cf6',restaurante:'#22c55e',
+                  tienda_conveniencia:'#3b82f6',farmacia:'#06b6d4',hospital:'#0891b2',
+                  taller_mecanico:'#78716c',terminal_carga:'#6366f1',motor_apagado:'#64748b',
+                  ralenti:'#94a3b8',parada_no_autorizada:'#ef4444',estacionamiento_prolongado:'#f97316',
+                  pernocta_fuera_de_base:'#dc2626',parada_larga:'#b45309',parada_en_geocerca:'#0ea5e9',
+                  punto_de_control:'#10b981',entrega:'#10b981',parada_en_carretera:'#94a3b8'}
+                const safe = JSON.stringify(locs).replaceAll('</', String.raw`<\/`)
+                const safeC = JSON.stringify(CAT_COLORS_MAP).replaceAll('</', String.raw`<\/`)
+                mw.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"/>
+<title>Top paradas históricas</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<style>html,body{margin:0;height:100%;font-family:Inter,system-ui,sans-serif;}
+#map{width:100%;height:calc(100% - 48px);}
+.hdr{height:48px;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;font-weight:700;gap:12px;}
+</style></head><body>
+<div class="hdr">Top ${Math.min(locs.length, 100)} paradas históricas — flota completa
+  <span style="font-size:11px;color:#6b7280;font-weight:400">Tamaño = assets únicos · Color = categoría</span>
+</div>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+const locs=\${safe};const CAT=\${safeC};
+const map=L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const bounds=[];
+locs.forEach((l,i)=>{
+  const color=CAT[l.category]||'#94a3b8';
+  const r=Math.max(8,Math.min(40,Math.sqrt(l.unique_assets)*1.8));
+  const pos=[l.lat,l.lon];bounds.push(pos);
+  L.circleMarker(pos,{radius:r,color:'#fff',weight:2,fillColor:color,fillOpacity:0.85}).addTo(map)
+   .bindPopup('<b>'+l.icon+' #'+(i+1)+' '+(l.place||l.category.replace(/_/g,' '))+'</b><br/>'+
+              'Categoría: <b>'+l.category.replace(/_/g,' ')+'</b><br/>'+
+              'Paradas detectadas: <b>'+l.stop_count.toLocaleString()+'</b><br/>'+
+              'Assets únicos: <b>'+l.unique_assets+'</b><br/>'+
+              'Clientes: <b>'+l.unique_clients+'</b><br/>'+
+              'Duración prom.: <b>'+l.avg_dur_min.toFixed(0)+' min</b>')
+   .bindTooltip(l.icon+' '+(l.place||l.category.replace(/_/g,' '))+' · '+l.stop_count.toLocaleString()+' paradas',{direction:'top'});
+});
+if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
+</script></body></html>`)
+                mw.document.close()
+              }} style={{ fontSize: 13 }}>
+                Ver mapa top 100 ↗
+              </button>
+            )}
+          </div>
+
+          {/* Progreso */}
+          {batchStopsJob?.phase === 'running' && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>
+                <span>{batchStopsJob.message || 'Procesando…'}</span>
+                <span>{Math.round((batchStopsJob.progress ?? 0) * 100)}%</span>
+              </div>
+              <div style={{ background: '#e5e7eb', borderRadius: 6, height: 8 }}>
+                <div style={{
+                  background: '#8b5cf6', borderRadius: 6, height: 8,
+                  width: `${Math.round((batchStopsJob.progress ?? 0) * 100)}%`,
+                  transition: 'width 0.6s ease',
+                }} />
+              </div>
+              <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                Fase 1: detección de paradas en DuckDB · Fase 2: clasificación OSM.
+                Puedes seguir usando la app mientras corre.
+              </p>
+            </div>
+          )}
+
+          {batchStopsJob?.phase === 'error' && (
+            <p style={{ color: '#dc2626', fontSize: 13, marginBottom: 10 }}>{batchStopsJob.message}</p>
+          )}
+
+          {/* Resultados */}
+          {batchStops && (
+            <>
+              <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 14 }}>
+                Calculado el {new Date(batchStops.computed_at * 1000).toLocaleString('es-MX')} ·
+                {' '}{batchStops.total_clients?.toLocaleString()} clientes ·
+                {' '}{batchStops.total_stop_cells?.toLocaleString()} zonas de parada ·
+                {' '}{batchStops.total_stops?.toLocaleString()} paradas detectadas
+              </p>
+
+              {/* Barras de categoría */}
+              <h4 style={{ marginBottom: 10 }}>Distribución por tipo de parada (más → menos frecuente)</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 24 }}>
+                {batchStops.categories?.map((c, i) => (
+                  <div key={c.category} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ width: 26, textAlign: 'center', fontSize: 18, flexShrink: 0 }}>{c.icon}</span>
+                    <span style={{ width: 220, fontSize: 13, color: '#374151', flexShrink: 0 }}>
+                      {c.category.replace(/_/g, ' ')}
+                    </span>
+                    <div style={{ flex: 1, background: '#f1f5f9', borderRadius: 4, height: 20, overflow: 'hidden' }}>
+                      <div style={{
+                        height: '100%', borderRadius: 4,
+                        background: i === 0 ? '#8b5cf6' : i === batchStops.categories.length - 1 ? '#d1d5db' : '#6366f1',
+                        width: `${Math.max(c.pct, 0.5)}%`,
+                        transition: 'width 0.5s ease',
+                      }} />
+                    </div>
+                    <span style={{ width: 55, textAlign: 'right', fontSize: 12, color: '#6b7280', flexShrink: 0 }}>{c.pct}%</span>
+                    <span style={{ width: 110, textAlign: 'right', fontSize: 12, color: '#374151', flexShrink: 0 }}>
+                      {c.stop_count?.toLocaleString()} paradas
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Top 30 tabla */}
+              <h4 style={{ marginBottom: 8 }}>Top 30 ubicaciones con más paradas</h4>
+              <div className="table-wrap">
+                <table style={{ fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th>#</th><th>Lugar / Categoría</th><th>Latitud</th><th>Longitud</th>
+                      <th>Paradas</th><th>Assets</th><th>Clientes</th><th>Dur. prom.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batchStops.top_hotspots?.slice(0, 30).map((h, i) => (
+                      <tr key={i}>
+                        <td>{i + 1}</td>
+                        <td>
+                          <span style={{ fontSize: 15, marginRight: 6 }}>{h.icon}</span>
+                          <span style={{ color: '#374151' }}>{h.place || h.category.replace(/_/g, ' ')}</span>
+                          {h.place && <span style={{ color: '#9ca3af', fontSize: 11, marginLeft: 4 }}>({h.category.replace(/_/g, ' ')})</span>}
+                        </td>
+                        <td>{h.lat?.toFixed(4)}</td>
+                        <td>{h.lon?.toFixed(4)}</td>
+                        <td><strong>{h.stop_count?.toLocaleString()}</strong></td>
+                        <td>{h.unique_assets?.toLocaleString()}</td>
+                        <td>{h.unique_clients?.toLocaleString()}</td>
+                        <td>{h.avg_dur_min?.toFixed(0)} min</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {!batchStops && batchStopsJob?.phase !== 'running' && (
+            <p className="subtitle">
+              Presiona "Calcular análisis completo" para procesar todos los clientes, detectar paradas
+              con DuckDB y clasificarlas con OpenStreetMap (gasolinera, hotel, restaurante, etc.).
+            </p>
+          )}
+        </section>
+      )}
+
       {activeMenu === 'dashboard' && (
         <>
       <section className="card">
@@ -4441,8 +5136,17 @@ function App() {
                         }}>
                           Ver mapa de esta ruta completa (#{(expandedRouteIndex ?? 0) + 1})
                         </button>
-                        <button onClick={() => openMlPredictedRouteMapWindow(route, routeIndex)}>
-                          Ver mapa ruta ML
+                        <button
+                          onClick={() => openMlPredictedRouteMapWindow(route, routeIndex)}
+                          disabled={mlPredictionsLoading || !mlPrediction?.predicted_route}
+                          title={
+                            mlPredictionsLoading ? 'Calculando predicción ML…' :
+                            mlPrediction?.error   ? `Error ML: ${mlPrediction.error}` :
+                            !mlPrediction?.predicted_route ? 'Sin predicción ML para esta ruta' :
+                            `Ruta ML: ${mlPrediction.predicted_route}`
+                          }
+                        >
+                          {mlPredictionsLoading ? 'ML…' : 'Ver mapa ruta ML'}
                         </button>
                         <button onClick={() => openGapAnalysisWindow(route, routeIndex)}>
                           Ver gráfico en ventana aparte
@@ -4611,7 +5315,20 @@ function App() {
           <strong>mismo ServerTimeStamp</strong> (o muy cercanos).
         </p>
 
-        {signalLossLoading && <p className="subtitle">Analizando timestamps...</p>}
+        {signalLossLoading && (
+          <div style={{ marginTop: 12, marginBottom: 4 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>
+              <span>Analizando timestamps GPS vs servidor…</span>
+              <span>{signalLossProgress}%</span>
+            </div>
+            <div style={{ background: '#e5e7eb', borderRadius: 6, height: 8 }}>
+              <div style={{
+                background: '#2563eb', borderRadius: 6, height: 8,
+                width: `${signalLossProgress}%`, transition: 'width 0.4s ease',
+              }} />
+            </div>
+          </div>
+        )}
 
         {!signalLossLoading && signalLossData && (
           <>
@@ -4853,8 +5570,43 @@ function App() {
           Parada detectada cuando el vehículo permanece con desplazamiento {'<'} 50 m durante ≥ 5 min.
           Clasificación: A) EventType Motum · B) POI cercano (OpenStreetMap).
         </p>
+        {expandedRouteIndex !== null && routeDetection?.complete_routes?.[expandedRouteIndex] ? (
+          <p className="subtitle" style={{ color: '#7c3aed', fontWeight: 600 }}>
+            Analizando ruta #{expandedRouteIndex + 1} —{' '}
+            {routeDetection.complete_routes[expandedRouteIndex].start_timestamp?.slice(0, 19).replace('T', ' ') ?? ''}
+            {' → '}
+            {routeDetection.complete_routes[expandedRouteIndex].end_timestamp?.slice(0, 19).replace('T', ' ') ?? ''}
+          </p>
+        ) : (
+          <p className="subtitle" style={{ color: '#f59e0b' }}>
+            ⚠ Sin ruta seleccionada en sección 3 — selecciona una ruta para ver sus paradas.
+          </p>
+        )}
 
-        {stopsLoading && <p className="subtitle">Detectando paradas...</p>}
+        {stopsLoading && (
+          <div style={{ marginTop: 12, marginBottom: 4 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>
+              <span>
+                {stopsWithGeo
+                  ? 'Detectando paradas y consultando OSM por carretera/POI… (puede tardar varios minutos)'
+                  : 'Detectando y clasificando paradas…'}
+              </span>
+              <span>{stopsProgress}%</span>
+            </div>
+            <div style={{ background: '#e5e7eb', borderRadius: 6, height: 8 }}>
+              <div style={{
+                background: stopsWithGeo ? '#7c3aed' : '#2563eb',
+                borderRadius: 6, height: 8,
+                width: `${stopsProgress}%`, transition: 'width 0.5s ease',
+              }} />
+            </div>
+            {stopsWithGeo && (
+              <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                Consultando OpenStreetMap en lotes de 15 paradas. Puedes seguir usando la app mientras corre.
+              </p>
+            )}
+          </div>
+        )}
 
         {!stopsLoading && stopsData && (
           <>
@@ -5046,110 +5798,95 @@ function App() {
         </>
       )}
 
-      {activeMenu === 'dashboard' && (
+      {activeMenu === 'carreteras' && (
         <section className="card">
-          <h2>6) Zonas sin cobertura GPS</h2>
-          <p className="subtitle source-chip">{sourceLabel}</p>
+          <h2>Cobertura GPS global — todos los activos</h2>
+          <p className="subtitle">
+            Análisis de pérdida de señal GPS en <strong>todos los clientes y assets</strong> del dataset.
+            Identifica zonas geográficas donde múltiples vehículos pierden señal sistemáticamente.
+          </p>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-            {!coverageData && (
-              <button
-                onClick={() => loadCoverageData(20, false)}
-                disabled={coverageLoading || !summaryClientId.trim()}
-                style={{ fontSize: 13 }}
-              >
-                {coverageLoading
-                  ? 'Cargando…'
-                  : coverageCacheStatus?.exists
-                    ? 'Cargar desde caché'
-                    : 'Calcular análisis (top 20 assets)'}
-              </button>
-            )}
-            {!summaryClientId.trim() && !coverageData && (
-              <p className="subtitle" style={{ margin: 0 }}>Ingresa un clientId en el Resumen Ejecutivo (sección 0) primero.</p>
-            )}
-            {coverageData && !coverageLoading && (
-              <button
-                onClick={() => loadCoverageData(20, true)}
-                disabled={coverageLoading}
-                style={{ fontSize: 13, background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1' }}
-                title="Recalcula todos los assets y actualiza el caché"
-              >
-                ↺ Recalcular
-              </button>
-            )}
-            {coverageData && !coverageLoading && (
-              <button onClick={openCoverageMapWindow} style={{ fontSize: 13 }}>
-                Ver mapa ↗
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <button
+              onClick={startGlobalCovJob}
+              disabled={globalCovJob?.status === 'running'}
+              style={{ fontSize: 13 }}
+            >
+              {globalCovJob?.status === 'running' ? 'Analizando…' : globalCovData ? '↺ Recalcular' : 'Calcular cobertura global'}
+            </button>
+            {globalCovData && (
+              <button onClick={openGlobalCovMapWindow} style={{ fontSize: 13 }}>
+                Ver mapa global ↗
               </button>
             )}
           </div>
 
-          {coverageCacheStatus && !coverageLoading && (
-            <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
-              {coverageCacheStatus.exists
-                ? `Caché disponible · última actualización: ${coverageCacheStatus.cached_at ? new Date(coverageCacheStatus.cached_at).toLocaleString('es-MX') : '—'}${coverageCacheStatus.stale ? ' · ⚠ caché desactualizado' : ''}`
-                : 'Sin caché — se calculará al solicitar'}
-            </p>
-          )}
-          {coverageData?.from_cache === false && !coverageLoading && (
-            <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, marginTop: 0 }}>
-              Recién calculado y guardado en caché · {coverageData.cached_at ? new Date(coverageData.cached_at).toLocaleString('es-MX') : ''}
-            </p>
+          {/* Progreso del job */}
+          {globalCovJob?.status === 'running' && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>
+                <span>{globalCovJob.message || 'Procesando…'}</span>
+                <span>{Math.round((globalCovJob.progress ?? 0) * 100)}%</span>
+              </div>
+              <div style={{ background: '#e5e7eb', borderRadius: 6, height: 8 }}>
+                <div style={{
+                  background: '#2563eb', borderRadius: 6, height: 8,
+                  width: `${Math.round((globalCovJob.progress ?? 0) * 100)}%`,
+                  transition: 'width 0.5s ease',
+                }} />
+              </div>
+              <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                Este proceso puede tardar varios minutos. Puedes seguir usando la app mientras corre.
+              </p>
+            </div>
           )}
 
-          {coverageLoading && (
-            <p className="subtitle" style={{ color: '#6b7280' }}>
-              {coverageCacheStatus?.exists ? 'Cargando datos del caché…' : `Calculando cobertura para clientId ${summaryClientId} — puede tardar ~30 s…`}
-            </p>
+          {globalCovJob?.status === 'error' && (
+            <p style={{ color: '#dc2626', fontSize: 13 }}>{globalCovJob.message}</p>
           )}
 
-          {coverageData && !coverageLoading && (
+          {/* Resultados */}
+          {globalCovData && (
             <>
-              {coverageData.error && <p style={{ color: '#dc2626', fontSize: 13 }}>{coverageData.error}</p>}
+              <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 12 }}>
+                Calculado el {new Date(globalCovData.computed_at * 1000).toLocaleString('es-MX')} ·
+                Grid: {globalCovData.grid_size_deg}° (~1 km) · Clientes analizados: {globalCovData.total_clients}
+              </p>
+
+              {/* Tarjetas KPI */}
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
                 {[
-                  { label: 'Assets analizados', value: coverageData.total_assets_analyzed ?? 0, color: '#1d4ed8', bg: '#eff6ff' },
-                  { label: 'Zonas sin cobertura', value: coverageData.structural_zones ?? 0, color: '#dc2626', bg: '#fef2f2', note: '≥2 assets afectados' },
-                  { label: 'Eventos aislados', value: coverageData.isolated_events ?? 0, color: '#d97706', bg: '#fffbeb', note: '1 asset afectado' },
-                  { label: 'Puntos sin GPS', value: (coverageData.total_lost_points ?? 0).toLocaleString(), color: '#7c3aed', bg: '#f5f3ff' },
+                  { label: 'Clientes analizados', value: globalCovData.total_clients ?? 0, color: '#1d4ed8', bg: '#eff6ff' },
+                  { label: 'Zonas sin cobertura', value: globalCovData.structural_zones ?? 0, color: '#dc2626', bg: '#fef2f2', note: '≥2 assets afectados' },
+                  { label: 'Eventos aislados', value: globalCovData.isolated_events ?? 0, color: '#d97706', bg: '#fffbeb', note: '1 asset' },
+                  { label: 'Total hotspots', value: globalCovData.total_hotspots ?? 0, color: '#7c3aed', bg: '#f5f3ff' },
                 ].map((c) => (
-                  <div key={c.label} style={{ background: c.bg, border: `1px solid ${c.color}33`, borderRadius: 8, padding: '10px 16px', minWidth: 140 }}>
+                  <div key={c.label} style={{ background: c.bg, border: `1px solid ${c.color}33`, borderRadius: 8, padding: '10px 16px', minWidth: 150 }}>
                     <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 2 }}>{c.label}</div>
-                    <div style={{ fontSize: 24, fontWeight: 700, color: c.color }}>{c.value}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: c.color }}>{(typeof c.value === 'number' ? c.value.toLocaleString() : c.value)}</div>
                     {c.note && <div style={{ fontSize: 11, color: '#9ca3af' }}>{c.note}</div>}
                   </div>
                 ))}
               </div>
 
-              {coverageData.hotspots && coverageData.hotspots.length > 0 && (
+              {/* Tabla estructurales */}
+              {globalCovData.structural_hotspots?.length > 0 && (
                 <>
-                  <h4 style={{ margin: '0 0 8px', fontSize: 14 }}>Zonas más afectadas ({coverageData.total_hotspots} total)</h4>
+                  <h4 style={{ margin: '16px 0 6px', fontSize: 14, color: '#dc2626' }}>
+                    ⛔ Zonas estructurales sin cobertura — top {Math.min(30, globalCovData.structural_hotspots.length)} de {globalCovData.structural_zones.toLocaleString()}
+                  </h4>
                   <div className="table-wrap">
                     <table style={{ fontSize: 13 }}>
-                      <thead>
-                        <tr>
-                          <th>#</th><th>Latitud</th><th>Longitud</th><th>Assets afectados</th><th>Eventos</th><th>Categoría</th>
-                        </tr>
-                      </thead>
+                      <thead><tr><th>#</th><th>Latitud</th><th>Longitud</th><th>Assets</th><th>Clientes</th><th>Eventos</th></tr></thead>
                       <tbody>
-                        {coverageData.hotspots.slice(0, 20).map((h, i) => (
+                        {globalCovData.structural_hotspots.slice(0, 30).map((h, i) => (
                           <tr key={i}>
                             <td>{i + 1}</td>
                             <td>{h.lat?.toFixed(4)}</td>
                             <td>{h.lon?.toFixed(4)}</td>
-                            <td><strong style={{ color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706' }}>{h.asset_count}</strong></td>
-                            <td>{h.event_count}</td>
-                            <td>
-                              <span style={{
-                                background: h.category === 'zona_sin_cobertura' ? '#fef2f2' : '#fffbeb',
-                                color: h.category === 'zona_sin_cobertura' ? '#dc2626' : '#d97706',
-                                border: `1px solid ${h.category === 'zona_sin_cobertura' ? '#fca5a5' : '#fcd34d'}`,
-                                borderRadius: 4, padding: '1px 6px', fontSize: 11,
-                              }}>
-                                {h.category === 'zona_sin_cobertura' ? 'Sin cobertura' : 'Evento aislado'}
-                              </span>
-                            </td>
+                            <td><strong style={{ color: '#dc2626' }}>{h.asset_count}</strong></td>
+                            <td>{h.client_count}</td>
+                            <td>{h.event_count?.toLocaleString()}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -5158,13 +5895,37 @@ function App() {
                 </>
               )}
 
-              {coverageData.errors && coverageData.errors.length > 0 && (
-                <details style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
-                  <summary>{coverageData.errors.length} asset(s) con errores al procesar</summary>
-                  <ul style={{ marginTop: 4 }}>{coverageData.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
-                </details>
+              {/* Tabla aislados */}
+              {globalCovData.isolated_hotspots?.length > 0 && (
+                <>
+                  <h4 style={{ margin: '16px 0 6px', fontSize: 14, color: '#d97706' }}>
+                    ⚡ Eventos aislados — top {Math.min(30, globalCovData.isolated_hotspots.length)} de {globalCovData.isolated_events.toLocaleString()}
+                  </h4>
+                  <div className="table-wrap">
+                    <table style={{ fontSize: 13 }}>
+                      <thead><tr><th>#</th><th>Latitud</th><th>Longitud</th><th>Asset ID</th><th>Eventos</th></tr></thead>
+                      <tbody>
+                        {globalCovData.isolated_hotspots.slice(0, 30).map((h, i) => (
+                          <tr key={i}>
+                            <td>{i + 1}</td>
+                            <td>{h.lat?.toFixed(4)}</td>
+                            <td>{h.lon?.toFixed(4)}</td>
+                            <td style={{ color: '#d97706' }}>{h.asset_ids?.[0] ?? '—'}</td>
+                            <td>{h.event_count?.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               )}
             </>
+          )}
+
+          {!globalCovData && globalCovJob?.status !== 'running' && (
+            <p className="subtitle">Presiona "Calcular cobertura global" para iniciar el análisis de todos los {' '}
+              clientes y assets del dataset.
+            </p>
           )}
         </section>
       )}
@@ -5198,6 +5959,129 @@ function App() {
           <p className="subtitle">
             Usa el selector para filtrar una carretera específica o elige Todas para visualizar toda la red cargada.
           </p>
+        </section>
+      )}
+
+      {activeMenu === 'carreteras' && (
+        <section className="card">
+          <h2>Cobertura GPS por carretera</h2>
+          <p className="subtitle">
+            Cruza las zonas de pérdida de señal GPS (análisis global) con el catálogo de carreteras
+            para identificar qué tramos tienen problemas sistemáticos de cobertura.
+          </p>
+
+          <div className="toolbar" style={{ marginBottom: 12 }}>
+            <button onClick={loadRoadCovMatch} disabled={roadCovLoading}>
+              {roadCovLoading ? 'Calculando…' : roadCovMatch ? '↺ Recalcular match' : 'Calcular cobertura por carretera'}
+            </button>
+            {roadCovMatch && (
+              <button onClick={openRoadCovMapWindow} style={{ fontSize: 13 }}>
+                Ver mapa ↗
+              </button>
+            )}
+            {roadCovMatch && (
+              <select
+                value={roadCovFilter}
+                onChange={e => setRoadCovFilter(e.target.value)}
+                style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db' }}
+              >
+                <option value="all">Todas las severidades</option>
+                <option value="alta">Alta (≥10 zonas estructurales)</option>
+                <option value="media">Media (3–9 zonas)</option>
+                <option value="baja">Baja (1–2 zonas)</option>
+                <option value="aislada">Solo eventos aislados</option>
+              </select>
+            )}
+          </div>
+
+          {!roadCovMatch && !roadCovLoading && (
+            <p className="subtitle">
+              Requiere que el análisis de cobertura global (sección 7 del Dashboard) esté calculado primero.
+            </p>
+          )}
+
+          {roadCovMatch && !roadCovLoading && (() => {
+            const filtered = roadCovFilter === 'all'
+              ? roadCovMatch.roads
+              : roadCovMatch.roads.filter(r => r.severity === roadCovFilter)
+
+            const sevColor = { alta: '#dc2626', media: '#d97706', baja: '#2563eb', aislada: '#6b7280' }
+            const sevBg    = { alta: '#fef2f2', media: '#fffbeb', baja: '#eff6ff', aislada: '#f9fafb' }
+
+            return (
+              <>
+                {/* KPIs */}
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+                  {[
+                    { label: 'Carreteras analizadas', value: roadCovMatch.total_roads_analyzed, color: '#1d4ed8', bg: '#eff6ff' },
+                    { label: 'Con problemas GPS', value: roadCovMatch.roads_with_issues, color: '#dc2626', bg: '#fef2f2' },
+                    { label: 'Sin problemas', value: roadCovMatch.roads_unaffected, color: '#16a34a', bg: '#f0fdf4' },
+                  ].map(c => (
+                    <div key={c.label} style={{ background: c.bg, border: `1px solid ${c.color}33`, borderRadius: 8, padding: '10px 16px', minWidth: 150 }}>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 2 }}>{c.label}</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: c.color }}>{c.value.toLocaleString()}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
+                  Mostrando {filtered.length} carreteras
+                  {roadCovFilter !== 'all' ? ` · filtro: severidad "${roadCovFilter}"` : ''}
+                </p>
+
+                <div className="table-wrap">
+                  <table style={{ fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Carretera</th>
+                        <th>Tipo</th>
+                        <th>Km</th>
+                        <th>Zonas sin cobertura</th>
+                        <th>Eventos aislados</th>
+                        <th>Total eventos GPS perdidos</th>
+                        <th>Severidad</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.slice(0, 100).map((r, i) => (
+                        <tr key={r.name}>
+                          <td>{i + 1}</td>
+                          <td style={{ maxWidth: 280, wordBreak: 'break-word' }}>{r.name}</td>
+                          <td>{r.p_type || r.tipo}</td>
+                          <td>{r.longitud_km ?? '—'}</td>
+                          <td>
+                            <strong style={{ color: r.structural_zones > 0 ? '#dc2626' : '#374151' }}>
+                              {r.structural_zones}
+                            </strong>
+                          </td>
+                          <td style={{ color: r.isolated_events > 0 ? '#d97706' : '#374151' }}>
+                            {r.isolated_events}
+                          </td>
+                          <td>{r.total_events.toLocaleString()}</td>
+                          <td>
+                            <span style={{
+                              background: sevBg[r.severity] || '#f9fafb',
+                              color: sevColor[r.severity] || '#374151',
+                              border: `1px solid ${sevColor[r.severity] || '#d1d5db'}44`,
+                              borderRadius: 4, padding: '1px 8px', fontSize: 11, fontWeight: 600,
+                            }}>
+                              {r.severity}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {filtered.length > 100 && (
+                  <p style={{ fontSize: 12, color: '#9ca3af', marginTop: 6 }}>
+                    Mostrando 100 de {filtered.length}. Usa el filtro de severidad para acotar.
+                  </p>
+                )}
+              </>
+            )
+          })()}
         </section>
       )}
 

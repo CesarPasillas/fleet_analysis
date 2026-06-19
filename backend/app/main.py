@@ -22,6 +22,10 @@ from app.analytics_store import (
     get_snapshot_status,
     query_merged_rows,
 )
+from app.global_coverage import start_global_coverage_job, get_status as global_cov_status, get_cached_result as global_cov_cached
+from app.road_coverage_match import compute_road_coverage_match
+from app.historical_stops import get_historical_stop_analysis
+from app.batch_stop_analysis import start_batch_job, get_status as batch_stop_status, get_cached_result as batch_stop_cached
 from app.signal_loss_detection import detect_signal_loss
 from app.signal_loss_anomalies import classify_signal_loss_anomalies
 from app.stop_detection import detect_and_classify_stops
@@ -659,6 +663,60 @@ def signal_loss_coverage_summary(
         grid_size_deg=grid_size_deg,
         force_refresh=force_refresh,
     )
+
+
+@app.post("/routes/signal-loss/global-coverage/compute")
+def global_coverage_compute() -> dict:
+    """Lanza el job de cobertura global en background. Si ya hay uno corriendo, lo indica."""
+    return start_global_coverage_job()
+
+
+@app.get("/routes/signal-loss/global-coverage/status")
+def global_coverage_status_endpoint() -> dict:
+    """Devuelve el estado del job de cobertura global (progreso, mensaje, done)."""
+    return global_cov_status()
+
+
+@app.get("/routes/signal-loss/global-coverage")
+def global_coverage_result() -> dict:
+    """Devuelve el resultado cacheado del análisis global, o {} si no hay."""
+    cached = global_cov_cached()
+    if cached is None:
+        return {"available": False}
+    return {"available": True, **cached}
+
+
+@app.post("/routes/stops/batch-analysis/compute")
+def batch_stops_compute(force: bool = False) -> dict:
+    return start_batch_job(force=force)
+
+
+@app.get("/routes/stops/batch-analysis/status")
+def batch_stops_status() -> dict:
+    return batch_stop_status()
+
+
+@app.get("/routes/stops/batch-analysis")
+def batch_stops_result() -> dict:
+    cached = batch_stop_cached()
+    if cached is None:
+        return {"available": False}
+    return {"available": True, **cached}
+
+
+@app.get("/routes/stops/historical-analysis")
+async def historical_stops_analysis(top_locations: int = 30) -> dict:
+    """Análisis histórico de paradas: distribución por categoría y top ubicaciones."""
+    import asyncio
+    from functools import partial
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, partial(get_historical_stop_analysis, top_locations))
+
+
+@app.get("/routes/signal-loss/road-coverage-match")
+def road_coverage_match() -> dict:
+    """Cruza los hotspots de cobertura global con el catálogo de carreteras."""
+    return compute_road_coverage_match()
 
 
 @app.delete(
