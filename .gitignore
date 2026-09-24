@@ -26,6 +26,9 @@ data/
 .DS_Store
 *.zip
 
+# IDE
+.idea/
+
 # Artefactos ML duplicados en raiz (los originales van en backend/app/ml/artifacts/)
 /app/
 

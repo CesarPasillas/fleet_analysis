@@ -78,6 +78,14 @@ def _prepare_working_df(
     return w[(w["_gps_ms"] > 0) & (w["_srv_ms"] > 0)].copy()
 
 
+def _match_road_name(coords: list[list[float]]) -> str | None:
+    try:
+        from app.road_coverage_match import match_road_for_coordinates
+        return match_road_for_coordinates(coords)
+    except Exception:
+        return None
+
+
 def _build_segments(
     batch_stats: pd.DataFrame,
     loss_batch_ids: set[int],
@@ -99,6 +107,7 @@ def _build_segments(
                 "duration_minutes": round(float(row["gps_span_s"]) / 60.0, 2),
                 "num_records": int(row["count"]),
                 "coordinates": coords,
+                "road_name": _match_road_name(coords),
             }
         )
     segments.sort(key=lambda s: s["gps_start"] or "")

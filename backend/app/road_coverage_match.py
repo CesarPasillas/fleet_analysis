@@ -19,6 +19,8 @@ _COV_PATH = Path(__file__).resolve().parents[1] / "data" / "global_coverage.json
 
 _GRID = 0.01   # must match global_coverage._GRID_SIZE
 
+_road_grid_cache: dict[tuple[float, float], set[str]] | None = None
+
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
@@ -49,6 +51,52 @@ def _neighbors(cell: tuple[float, float], grid: float) -> list[tuple[float, floa
         for dr in (-1, 0, 1)
         for dc in (-1, 0, 1)
     ]
+
+
+def get_road_grid_index() -> dict[tuple[float, float], set[str]]:
+    """Cell → set of road names, built once from carreteras_raw and cached in-process."""
+    global _road_grid_cache
+    if _road_grid_cache is not None:
+        return _road_grid_cache
+
+    cell_to_roads: dict[tuple[float, float], set[str]] = defaultdict(set)
+    if _DB_PATH.exists():
+        try:
+            con = duckdb.connect(str(_DB_PATH), read_only=True)
+            rows = con.execute(
+                "SELECT name, geometry FROM carreteras_raw WHERE geometry IS NOT NULL"
+            ).fetchall()
+            con.close()
+            for name, geometry in rows:
+                if not geometry or not name:
+                    continue
+                for lat, lon in _parse_linestring(geometry):
+                    cell_to_roads[_cell(lat, lon, _GRID)].add(name)
+        except Exception:
+            pass
+
+    _road_grid_cache = cell_to_roads
+    return _road_grid_cache
+
+
+def match_road_for_coordinates(coords: list[list[float]]) -> str | None:
+    """Majority-vote road name among the cells covered by a list of [lat, lon] points."""
+    if not coords:
+        return None
+    index = get_road_grid_index()
+    if not index:
+        return None
+
+    counts: dict[str, int] = defaultdict(int)
+    for lat, lon in coords:
+        cell = _cell(lat, lon, _GRID)
+        for ncell in _neighbors(cell, _GRID):
+            for name in index.get(ncell, ()):
+                counts[name] += 1
+
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
 # ── Core match ────────────────────────────────────────────────────────────────

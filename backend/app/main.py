@@ -29,10 +29,14 @@ from app.batch_stop_analysis import start_batch_job, get_status as batch_stop_st
 from app.signal_loss_detection import detect_signal_loss
 from app.signal_loss_anomalies import classify_signal_loss_anomalies
 from app.stop_detection import detect_and_classify_stops
+from app.asset_stop_profile import build_asset_stop_profile, build_profile_from_stops, flag_atypical_stops
 from app.digital_twin import get_asset_twin_state, get_fleet_twin_summary
 from app.eventtype_joiner import load_and_merge_pos_eventtype
 from app.eventtype_reader import get_eventtype_csv_path
 from app.ml.model import RouteMLService
+from app.route_learning import build_route_learning_model, predict_destination
+from app.route_stop_patterns import build_route_stop_patterns, flag_atypical_trip, assign_stops_to_routes
+from app.route_duration_patterns import build_route_duration_patterns, flag_atypical_duration
 from app.pos_reader import get_pos_directory, list_pos_csv_files
 from app.route_detection import detect_routes_by_asset_client
 from app.route_cache import get_cached_routes, store_cached_routes, clear_route_cache, coverage_cache_info
@@ -160,6 +164,150 @@ def predict_route(payload: RouteFeatures) -> PredictionResponse:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {exc}") from exc
 
     return PredictionResponse(predicted_route=route_id, confidence=confidence)
+
+
+@app.get(
+    "/routes/predict/learned-routes",
+    responses={
+        404: {"description": "Asset/client data not found"},
+        500: {"description": "Unexpected error building the route learning model"},
+    },
+)
+def learned_routes(
+    asset_id: int,
+    client_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    origin_radius_km: float = 8.0,
+    dest_radius_km: float = 8.0,
+) -> dict:
+    """
+    Fase de aprendizaje de rutas históricas del Caso 3: agrupa los recorridos de este
+    asset+cliente por origen/destino y calcula, para cada origen, la distribución de
+    destinos históricos y el punto de control (proxy de caseta) que los precede.
+    """
+    detection = _get_or_detect_routes(asset_id, client_id, date_from, date_to)
+    routes = detection.get("complete_routes") or []
+    model = build_route_learning_model(routes, origin_radius_km=origin_radius_km, dest_radius_km=dest_radius_km)
+    return {"asset_id": asset_id, "client_id": client_id, **model}
+
+
+@app.get(
+    "/routes/predict/destination",
+    responses={
+        404: {"description": "Asset/client data not found"},
+        500: {"description": "Unexpected error predicting destination"},
+    },
+)
+def predict_destination_endpoint(
+    asset_id: int,
+    client_id: int,
+    origin_lat: float,
+    origin_lon: float,
+    passed_roads: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    origin_radius_km: float = 8.0,
+    dest_radius_km: float = 8.0,
+) -> dict:
+    """
+    Predicción de destino por aprendizaje de rutas históricas: dado el origen del
+    viaje en curso y las carreteras ya recorridas (passed_roads, separadas por '|'),
+    devuelve la distribución de destinos históricos aprendida para ese origen.
+    """
+    detection = _get_or_detect_routes(asset_id, client_id, date_from, date_to)
+    routes = detection.get("complete_routes") or []
+    model = build_route_learning_model(routes, origin_radius_km=origin_radius_km, dest_radius_km=dest_radius_km)
+    roads = [r.strip() for r in passed_roads.split("|")] if passed_roads else []
+    prediction = predict_destination(model, origin_lat=origin_lat, origin_lon=origin_lon, passed_roads=roads)
+    return {"asset_id": asset_id, "client_id": client_id, **prediction}
+
+
+@app.get(
+    "/routes/predict/duration-patterns",
+    responses={
+        404: {"description": "Asset/client data not found"},
+        500: {"description": "Unexpected error building the duration pattern"},
+    },
+)
+def duration_patterns(
+    asset_id: int,
+    client_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    origin_radius_km: float = 8.0,
+    dest_radius_km: float = 8.0,
+    min_trips_for_pattern: int = 3,
+) -> dict:
+    """
+    Caso 5 (demoras anómalas): aprende, por cada ruta habitual del asset (misma
+    agrupación origen/destino que el Caso 3/4), el tiempo normal de recorrido
+    (media, mediana, desviación estándar, percentiles) tras filtrar recorridos
+    atípicos previos (IQR). Unidad de análisis: assetId + clientId + ruta (sin
+    driverId ni segmentación por día/hora — ver route_duration_patterns.py).
+    """
+    detection = _get_or_detect_routes(asset_id, client_id, date_from, date_to)
+    routes = detection.get("complete_routes") or []
+    model = build_route_duration_patterns(
+        routes, origin_radius_km=origin_radius_km, dest_radius_km=dest_radius_km,
+        min_trips_for_pattern=min_trips_for_pattern,
+    )
+    return {"asset_id": asset_id, "client_id": client_id, "driver_id": None, **model}
+
+
+@app.get(
+    "/routes/predict/duration-anomalies",
+    responses={
+        404: {"description": "Asset/client data not found"},
+        500: {"description": "Unexpected error detecting duration anomalies"},
+    },
+)
+def duration_anomalies(
+    asset_id: int,
+    client_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    origin_radius_km: float = 8.0,
+    dest_radius_km: float = 8.0,
+    min_trips_for_pattern: int = 3,
+) -> dict:
+    """
+    Caso 5: evalúa cada viaje histórico de cada ruta habitual contra el tiempo
+    normal de esa ruta y devuelve los viajes con demora anómala (% sobre el
+    promedio, severidad).
+    """
+    detection = _get_or_detect_routes(asset_id, client_id, date_from, date_to)
+    routes = detection.get("complete_routes") or []
+    model = build_route_duration_patterns(
+        routes, origin_radius_km=origin_radius_km, dest_radius_km=dest_radius_km,
+        min_trips_for_pattern=min_trips_for_pattern,
+    )
+
+    alerts: list[dict] = []
+    for pattern in model["route_patterns"]:
+        for route_idx in pattern["route_indices"]:
+            route = routes[route_idx]
+            flag = flag_atypical_duration(pattern, route)
+            if flag is None or not flag["is_delayed"]:
+                continue
+            alerts.append({
+                "route_index": route_idx,
+                "origin_cluster_id": pattern["origin_cluster_id"],
+                "destination_cluster_id": pattern["destination_cluster_id"],
+                "start_timestamp": route.get("start_timestamp"),
+                "end_timestamp": route.get("end_timestamp"),
+                **flag,
+            })
+
+    alerts.sort(key=lambda a: (-{"alta": 2, "media": 1}[a["severity"]], -(a["z_score"] or 0)))
+    return {
+        "asset_id": asset_id, "client_id": client_id, "driver_id": None,
+        "total_route_groups": model["total_route_groups"],
+        "total_trips_evaluated": sum(p["total_trips"] for p in model["route_patterns"]),
+        "delayed_trip_count": len(alerts),
+        "route_patterns": model["route_patterns"],
+        "alerts": alerts,
+    }
 
 
 @app.post(
@@ -433,6 +581,17 @@ def detect_routes(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> RouteDetectionResponse:
+    result = _get_or_detect_routes(asset_id, client_id, date_from, date_to)
+    return RouteDetectionResponse(**result)
+
+
+def _get_or_detect_routes(
+    asset_id: int,
+    client_id: int,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    """Detección de rutas por asset+cliente con caché en memoria (5 min) y disco."""
     cache_key = (asset_id, client_id, date_from, date_to)
 
     # 1. In-memory cache (fastest, 5-min TTL)
@@ -441,7 +600,7 @@ def detect_routes(
         stored_at, result = cached
         if time.monotonic() - stored_at < _ROUTE_CACHE_TTL_SECONDS:
             logger.info("Memory cache HIT asset_id=%d client_id=%d", asset_id, client_id)
-            return RouteDetectionResponse(**result)
+            return result
         del _ROUTE_DETECT_CACHE[cache_key]
 
     # 2. Persistent disk cache (survives restarts, invalidated on new snapshot)
@@ -449,7 +608,7 @@ def detect_routes(
     if result is not None:
         logger.info("Disk cache HIT asset_id=%d client_id=%d", asset_id, client_id)
         _ROUTE_DETECT_CACHE[cache_key] = (time.monotonic(), result)
-        return RouteDetectionResponse(**result)
+        return result
 
     # 3. Full calculation
     try:
@@ -468,7 +627,7 @@ def detect_routes(
 
     _ROUTE_DETECT_CACHE[cache_key] = (time.monotonic(), result)
     store_cached_routes(asset_id, client_id, date_from, date_to, result)
-    return RouteDetectionResponse(**result)
+    return result
 
 
 @app.get(
@@ -711,6 +870,255 @@ async def historical_stops_analysis(top_locations: int = 30) -> dict:
     from functools import partial
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, partial(get_historical_stop_analysis, top_locations))
+
+
+@app.get(
+    "/routes/stops/asset-profile",
+    responses={
+        404: {"description": "No se encontraron registros para este asset/client"},
+        500: {"description": "Error construyendo el perfil de paradas"},
+    },
+)
+async def stops_asset_profile(
+    asset_id: int,
+    client_id: int,
+    min_stop_minutes: float = 5.0,
+    use_geo: bool = True,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """Perfil histórico de paradas normales (ubicaciones, categorías, duraciones) para un asset+cliente."""
+    try:
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
+    except SnapshotUnavailableError:
+        try:
+            merged = load_and_merge_pos_eventtype()
+            asset_mask = pd.to_numeric(merged.get("assetId", pd.Series(dtype="object")), errors="coerce") == asset_id
+            client_mask = pd.to_numeric(merged.get("clientId", pd.Series(dtype="object")), errors="coerce") == client_id
+            merged_subset = merged[asset_mask & client_mask].copy()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Error cargando datos: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error accediendo snapshot: {exc}") from exc
+
+    try:
+        loop = asyncio.get_event_loop()
+        profile = await loop.run_in_executor(
+            None,
+            partial(build_asset_stop_profile, merged_subset, min_stop_minutes=min_stop_minutes, use_geo=use_geo),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error construyendo perfil de paradas: {exc}") from exc
+
+    return {"asset_id": asset_id, "client_id": client_id, **profile}
+
+
+@app.get(
+    "/routes/stops/asset-anomalies",
+    responses={
+        404: {"description": "No se encontraron registros para este asset/client"},
+        500: {"description": "Error detectando paradas atípicas"},
+    },
+)
+async def stops_asset_anomalies(
+    asset_id: int,
+    client_id: int,
+    min_stop_minutes: float = 5.0,
+    use_geo: bool = True,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """
+    Marca las paradas del asset+cliente que se apartan de su propio patrón histórico
+    (ubicación, tipo o duración no habituales). Precursor del Caso 4 — aún sin
+    segmentación por conductor ni por ruta.
+    """
+    try:
+        merged_subset = get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
+    except SnapshotUnavailableError:
+        try:
+            merged = load_and_merge_pos_eventtype()
+            asset_mask = pd.to_numeric(merged.get("assetId", pd.Series(dtype="object")), errors="coerce") == asset_id
+            client_mask = pd.to_numeric(merged.get("clientId", pd.Series(dtype="object")), errors="coerce") == client_id
+            merged_subset = merged[asset_mask & client_mask].copy()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Error cargando datos: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error accediendo snapshot: {exc}") from exc
+
+    def _compute() -> dict:
+        classified = detect_and_classify_stops(merged_subset, min_stop_minutes=min_stop_minutes, use_geo=use_geo)
+        if classified.get("error") or not classified["stops"]:
+            return {"total_stops": 0, "atypical_count": 0, "stops": [], "error": classified.get("error")}
+        profile = build_profile_from_stops(classified["stops"])
+        flagged = flag_atypical_stops(profile, classified["stops"])
+        return {
+            "total_stops": len(flagged),
+            "atypical_count": sum(1 for s in flagged if s["is_atypical"]),
+            "stops": flagged,
+            "error": None,
+        }
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _compute)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error detectando paradas atípicas: {exc}") from exc
+
+    return {"asset_id": asset_id, "client_id": client_id, **result}
+
+
+def _load_asset_client_subset(asset_id: int, client_id: int, date_from: str | None, date_to: str | None) -> pd.DataFrame:
+    try:
+        return get_asset_client_rows(asset_id=asset_id, client_id=client_id, date_from=date_from, date_to=date_to)
+    except SnapshotUnavailableError:
+        try:
+            merged = load_and_merge_pos_eventtype()
+            asset_mask = pd.to_numeric(merged.get("assetId", pd.Series(dtype="object")), errors="coerce") == asset_id
+            client_mask = pd.to_numeric(merged.get("clientId", pd.Series(dtype="object")), errors="coerce") == client_id
+            return merged[asset_mask & client_mask].copy()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Error cargando datos: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error accediendo snapshot: {exc}") from exc
+
+
+@app.get(
+    "/routes/stops/route-patterns",
+    responses={
+        404: {"description": "No se encontraron registros para este asset/client"},
+        500: {"description": "Error construyendo el patrón de paradas por ruta"},
+    },
+)
+async def stops_route_patterns(
+    asset_id: int,
+    client_id: int,
+    min_stop_minutes: float = 5.0,
+    use_geo: bool = True,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    origin_radius_km: float = 8.0,
+    dest_radius_km: float = 8.0,
+    min_trips_for_pattern: int = 3,
+) -> dict:
+    """
+    Caso 4 (paradas atípicas): aprende, por cada ruta habitual del asset (agrupada por
+    origen/destino, ver route_learning.py), el número típico de paradas, sus ubicaciones/
+    categorías/duraciones (reutiliza asset_stop_profile.py) y la secuencia típica de
+    categorías. NOTA DE ALCANCE: el dataset no tiene driverId — la unidad de análisis
+    es assetId + ruta, no assetId + conductor + ruta como en la metodología original.
+    """
+    merged_subset = _load_asset_client_subset(asset_id, client_id, date_from, date_to)
+    detection = _get_or_detect_routes(asset_id, client_id, date_from, date_to)
+    routes = detection.get("complete_routes") or []
+
+    def _compute() -> dict:
+        classified = detect_and_classify_stops(merged_subset, min_stop_minutes=min_stop_minutes, use_geo=use_geo)
+        stops = classified.get("stops") or []
+        return build_route_stop_patterns(
+            routes, stops,
+            origin_radius_km=origin_radius_km, dest_radius_km=dest_radius_km,
+            min_trips_for_pattern=min_trips_for_pattern,
+        )
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _compute)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error construyendo patrón de paradas por ruta: {exc}") from exc
+
+    return {"asset_id": asset_id, "client_id": client_id, "driver_id": None, **result}
+
+
+@app.get(
+    "/routes/stops/route-anomalies",
+    responses={
+        404: {"description": "No se encontraron registros para este asset/client"},
+        500: {"description": "Error detectando viajes atípicos"},
+    },
+)
+async def stops_route_anomalies(
+    asset_id: int,
+    client_id: int,
+    min_stop_minutes: float = 5.0,
+    use_geo: bool = True,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    origin_radius_km: float = 8.0,
+    dest_radius_km: float = 8.0,
+    min_trips_for_pattern: int = 3,
+) -> dict:
+    """
+    Caso 4: evalúa cada viaje histórico de cada ruta habitual contra el patrón normal
+    de esa ruta y devuelve los viajes atípicos (cantidad, ubicación, tipo, duración o
+    secuencia de paradas fuera de lo común), con severidad. Ver nota de alcance en
+    /routes/stops/route-patterns (sin driverId en el dataset).
+    """
+    merged_subset = _load_asset_client_subset(asset_id, client_id, date_from, date_to)
+    detection = _get_or_detect_routes(asset_id, client_id, date_from, date_to)
+    routes = detection.get("complete_routes") or []
+
+    def _compute() -> dict:
+        classified = detect_and_classify_stops(merged_subset, min_stop_minutes=min_stop_minutes, use_geo=use_geo)
+        stops = classified.get("stops") or []
+        model = build_route_stop_patterns(
+            routes, stops,
+            origin_radius_km=origin_radius_km, dest_radius_km=dest_radius_km,
+            min_trips_for_pattern=min_trips_for_pattern,
+        )
+        stop_assignment = assign_stops_to_routes(routes, stops)
+
+        alerts: list[dict] = []
+        for pattern in model["route_patterns"]:
+            for route_idx in pattern["route_indices"]:
+                trip_stops = stop_assignment.get(route_idx, [])
+                trip = flag_atypical_trip(pattern, trip_stops)
+                if not trip["is_atypical"]:
+                    continue
+                route = routes[route_idx]
+                alerts.append({
+                    "route_index": route_idx,
+                    "origin_cluster_id": pattern["origin_cluster_id"],
+                    "destination_cluster_id": pattern["destination_cluster_id"],
+                    "start_timestamp": route.get("start_timestamp"),
+                    "end_timestamp": route.get("end_timestamp"),
+                    "reasons": trip["reasons"],
+                    "severity": trip["severity"],
+                    "trip_stop_count": trip["trip_stop_count"],
+                    "expected_stop_count_range": trip["expected_stop_count_range"],
+                    "sequence_actual": trip["sequence_actual"],
+                    "sequence_typical": trip["sequence_typical"],
+                    "atypical_stops": [s for s in trip["stops"] if s["is_atypical"]],
+                })
+
+        alerts.sort(key=lambda a: (-{"alta": 2, "media": 1, "baja": 0}[a["severity"]], a["start_timestamp"] or ""))
+        return {
+            "total_route_groups": model["total_route_groups"],
+            "total_trips_evaluated": sum(p["total_trips"] for p in model["route_patterns"]),
+            "atypical_trip_count": len(alerts),
+            "route_patterns": model["route_patterns"],
+            "alerts": alerts,
+        }
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _compute)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error detectando viajes atípicos: {exc}") from exc
+
+    return {"asset_id": asset_id, "client_id": client_id, "driver_id": None, **result}
 
 
 @app.get("/routes/signal-loss/road-coverage-match")

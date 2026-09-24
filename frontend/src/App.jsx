@@ -52,6 +52,14 @@ function App() {
   const [stopsLoading, setStopsLoading] = useState(false)
   const [stopsProgress, setStopsProgress] = useState(0)
   const [stopsWithGeo, setStopsWithGeo] = useState(false)
+  const [stopAnomaliesData, setStopAnomaliesData] = useState(null)
+  const [stopAnomaliesLoading, setStopAnomaliesLoading] = useState(false)
+  const [learnedRoutesData, setLearnedRoutesData] = useState(null)
+  const [learnedRoutesLoading, setLearnedRoutesLoading] = useState(false)
+  const [routeAnomaliesData, setRouteAnomaliesData] = useState(null)
+  const [routeAnomaliesLoading, setRouteAnomaliesLoading] = useState(false)
+  const [durationAnomaliesData, setDurationAnomaliesData] = useState(null)
+  const [durationAnomaliesLoading, setDurationAnomaliesLoading] = useState(false)
   const [selectedMapRouteIndex, setSelectedMapRouteIndex] = useState(null)
   const [expandedRouteIndex, setExpandedRouteIndex] = useState(null)
   const [routePointsFilterMode, setRoutePointsFilterMode] = useState('all')
@@ -406,6 +414,10 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
       setSignalLossData(null)
       setSignalLossAnomalies(null)
       setStopsData(null)
+      setStopAnomaliesData(null)
+      setLearnedRoutesData(null)
+      setRouteAnomaliesData(null)
+      setDurationAnomaliesData(null)
       setSelectedMapRouteIndex(null)
       setExpandedRouteIndex(null)
     }
@@ -477,6 +489,68 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
       if (resp.ok) setStopsData(await resp.json())
     } finally {
       setStopsLoading(false)
+    }
+  }
+
+  const loadStopAnomalies = async () => {
+    const assetValue = routeAssetId.trim()
+    const clientValue = routeClientId.trim()
+    if (!assetValue || !clientValue) return
+    setStopAnomaliesLoading(true)
+    setStopAnomaliesData(null)
+    const query = buildRouteQuery(assetValue, clientValue)
+    query.set('use_geo', String(stopsWithGeo))
+    try {
+      const resp = await fetch(`${API_BASE}/routes/stops/asset-anomalies?${query.toString()}`)
+      if (resp.ok) setStopAnomaliesData(await resp.json())
+    } finally {
+      setStopAnomaliesLoading(false)
+    }
+  }
+
+  const loadRouteAnomalies = async () => {
+    const assetValue = routeAssetId.trim()
+    const clientValue = routeClientId.trim()
+    if (!assetValue || !clientValue) return
+    setRouteAnomaliesLoading(true)
+    setRouteAnomaliesData(null)
+    const query = buildRouteQuery(assetValue, clientValue)
+    query.set('use_geo', String(stopsWithGeo))
+    try {
+      const resp = await fetch(`${API_BASE}/routes/stops/route-anomalies?${query.toString()}`)
+      if (resp.ok) setRouteAnomaliesData(await resp.json())
+    } finally {
+      setRouteAnomaliesLoading(false)
+    }
+  }
+
+  const loadDurationAnomalies = async () => {
+    const assetValue = routeAssetId.trim()
+    const clientValue = routeClientId.trim()
+    if (!assetValue || !clientValue) return
+    setDurationAnomaliesLoading(true)
+    setDurationAnomaliesData(null)
+    const query = buildRouteQuery(assetValue, clientValue)
+    try {
+      const resp = await fetch(`${API_BASE}/routes/predict/duration-anomalies?${query.toString()}`)
+      if (resp.ok) setDurationAnomaliesData(await resp.json())
+    } finally {
+      setDurationAnomaliesLoading(false)
+    }
+  }
+
+  const loadLearnedRoutes = async () => {
+    const assetValue = routeAssetId.trim()
+    const clientValue = routeClientId.trim()
+    if (!assetValue || !clientValue) return
+    setLearnedRoutesLoading(true)
+    setLearnedRoutesData(null)
+    const query = buildRouteQuery(assetValue, clientValue)
+    try {
+      const resp = await fetch(`${API_BASE}/routes/predict/learned-routes?${query.toString()}`)
+      if (resp.ok) setLearnedRoutesData(await resp.json())
+    } finally {
+      setLearnedRoutesLoading(false)
     }
   }
 
@@ -619,6 +693,7 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
   // Clear section 5 (stops) when the selected route changes — stops are route-specific
   useEffect(() => {
     setStopsData(null)
+    setStopAnomaliesData(null)
   }, [expandedRouteIndex])
 
 
@@ -708,6 +783,10 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
       setSignalLossData(null)
       setSignalLossAnomalies(null)
       setStopsData(null)
+      setStopAnomaliesData(null)
+      setLearnedRoutesData(null)
+      setRouteAnomaliesData(null)
+      setDurationAnomaliesData(null)
       setRouteLoading(false)
       setSignalLossLoading(false)
       setStopsLoading(false)
@@ -912,6 +991,16 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
     return rowsData.columns
   })()
 
+  const ROUTE_REASON_LABELS = {
+    ignition_event: 'evento 519/520',
+    resumed_after_stop: 'reanudó tras parada',
+    stop_detected: 'parada real detectada',
+    data_start: 'inicio de los datos',
+    data_end: 'fin de los datos',
+  }
+
+  const describeRouteBoundary = (reason) => ROUTE_REASON_LABELS[reason] || reason || '—'
+
   const getRouteRoadLabels = (route) => {
     const inferred = Array.isArray(route?.inferred_roads)
       ? route.inferred_roads.map((value) => String(value || '').trim()).filter(Boolean)
@@ -960,15 +1049,17 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
   }
 
   const getIntervalRecordRole = (route, record) => {
-    const orderTimestamp = String(record?.order_timestamp || '')
-    const eventType = Number(record?.event_type)
+    // El inicio/fin de un recorrido ahora se determina por movimiento real (reposo
+    // GPS), no siempre coincide con un evento 519/520 exacto — comparar por
+    // record_index (posición absoluta), que route_detection.py siempre reporta.
+    const recordIndex = Number(record?.record_index)
 
-    const isStart = orderTimestamp === String(route?.start_timestamp || '') && eventType === Number(routeDetection?.event_start)
+    const isStart = Number.isFinite(recordIndex) && recordIndex === Number(route?.start_index)
     if (isStart) {
       return 'start'
     }
 
-    const isEnd = orderTimestamp === String(route?.end_timestamp || '') && eventType === Number(routeDetection?.event_end)
+    const isEnd = Number.isFinite(recordIndex) && recordIndex === Number(route?.end_index)
     if (isEnd) {
       return 'end'
     }
@@ -4914,11 +5005,14 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
       </section>
 
       <section className="card">
-        <h2>3) Detección de rutas por assetId/clientId (519/520)</h2>
+        <h2>3) Detección de rutas por assetId/clientId (movimiento + 519/520)</h2>
         <p className="subtitle source-chip">{sourceLabel}</p>
         <p className="subtitle">
-          Se usa <strong>519</strong> como inicio y <strong>520</strong> como fin. El cálculo ordena por
-          gpsTimestamp/serverTimestamp legibles, empareja eventos y reporta rutas incompletas.
+          El inicio/fin de cada recorrido se determina por movimiento GPS real (paradas de
+          ≥5 min sin desplazamiento marcan el corte); un evento <strong>519</strong> (inicio) o{' '}
+          <strong>520</strong> (fin) cercano se usa para afinar el límite exacto cuando el
+          dispositivo lo reporta. Esto evita que assets cuyo dispositivo nunca emite 520
+          (frecuente en el dataset) colapsen en un solo recorrido abierto de semanas.
         </p>
 
         <div className="toolbar">
@@ -5001,6 +5095,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                     <th>Principal</th>
                     <th>Inicio</th>
                     <th>Fin</th>
+                    <th title="Cómo se determinó el límite del recorrido: evento 519/520 confirmado, parada real detectada por GPS, o borde de los datos disponibles">Confirmación inicio/fin</th>
                     <th>Duración (h)</th>
                     <th>Distancia (km)</th>
                     <th>Total eventos</th>
@@ -5032,6 +5127,9 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                       <td>{route.is_primary ? 'SI' : ''}</td>
                       <td>{route.start_timestamp || ''}</td>
                       <td>{route.end_timestamp || ''}</td>
+                      <td>
+                        {describeRouteBoundary(route.start_reason)} → {describeRouteBoundary(route.end_reason)}
+                      </td>
                       <td>{route.duration_hours == null ? '' : route.duration_hours.toFixed(2)}</td>
                       <td>{route.distance_km.toFixed(2)}</td>
                       <td>{route.total_events}</td>
@@ -5054,12 +5152,160 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                   })}
                   {routeDetection.complete_routes.length === 0 && (
                     <tr>
-                      <td colSpan={14}>No se detectaron rutas completas 519→520 para este asset/client.</td>
+                      <td colSpan={15}>No se detectaron recorridos completos para este asset/client.</td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
+
+            <div className="toolbar" style={{ marginTop: 16 }}>
+              <button onClick={loadLearnedRoutes} disabled={learnedRoutesLoading}>
+                {learnedRoutesLoading ? 'Aprendiendo rutas históricas…' : '🧭 Aprender rutas históricas (origen → destino)'}
+              </button>
+            </div>
+
+            {learnedRoutesData && !learnedRoutesData.error && (
+              <div style={{ marginTop: 12 }}>
+                <h3>
+                  Rutas aprendidas para assetId={learnedRoutesData.asset_id}, clientId={learnedRoutesData.client_id}
+                </h3>
+                <p className="subtitle">
+                  {learnedRoutesData.total_routes_used} de {learnedRoutesData.total_routes_input} recorridos agrupados por
+                  origen/destino (radio {learnedRoutesData.origin_radius_km} km). El "punto de control" es la carretera
+                  compartida por los recorridos hacia distintos destinos desde ese origen — proxy de caseta, ya que no hay
+                  dataset real de casetas.
+                </p>
+                {learnedRoutesData.origins?.length > 0 ? (
+                  learnedRoutesData.origins.map((o) => (
+                    <div key={o.origin_cluster_id} style={{ marginBottom: 14 }}>
+                      <p style={{ marginBottom: 4 }}>
+                        <strong>Origen #{o.origin_cluster_id}</strong> ({o.lat.toFixed(4)}, {o.lon.toFixed(4)}) —{' '}
+                        {o.total_trips} viajes históricos
+                        {o.checkpoint_road && (
+                          <> · punto de control: <strong>{o.checkpoint_road}</strong></>
+                        )}
+                      </p>
+                      <div className="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Destino</th>
+                              <th>Coordenadas</th>
+                              <th>Viajes</th>
+                              <th>Frecuencia</th>
+                              <th>Dist. prom.</th>
+                              <th>Dur. prom.</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {o.destinations.map((d) => (
+                              <tr key={d.destination_cluster_id}>
+                                <td>#{d.destination_cluster_id}</td>
+                                <td style={{ fontSize: 11 }}>{d.lat.toFixed(4)}, {d.lon.toFixed(4)}</td>
+                                <td>{d.trip_count}</td>
+                                <td><strong>{d.pct_of_origin_trips}%</strong></td>
+                                <td>{d.avg_distance_km != null ? `${d.avg_distance_km} km` : '—'}</td>
+                                <td>{d.avg_duration_hours != null ? `${d.avg_duration_hours} h` : '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="subtitle">No hay suficientes recorridos completos para aprender rutas de este asset.</p>
+                )}
+              </div>
+            )}
+            {learnedRoutesData?.error && (
+              <p className="subtitle">Error: {learnedRoutesData.error}</p>
+            )}
+
+            <div className="toolbar" style={{ marginTop: 16 }}>
+              <button onClick={loadDurationAnomalies} disabled={durationAnomaliesLoading}>
+                {durationAnomaliesLoading ? 'Analizando tiempos de recorrido…' : '⏱ Demoras anómalas por ruta (Caso 5)'}
+              </button>
+            </div>
+
+            {durationAnomaliesData && !durationAnomaliesData.error && (
+              <div style={{ marginTop: 12 }}>
+                <h3>
+                  Viajes con demora anómala{' '}
+                  <span className={durationAnomaliesData.delayed_trip_count > 0 ? 'warning' : 'success'}>
+                    ({durationAnomaliesData.delayed_trip_count} de {durationAnomaliesData.total_trips_evaluated})
+                  </span>
+                </h3>
+                <p className="subtitle">
+                  Aprende el tiempo normal de recorrido (media, desviación estándar, percentiles) para cada ruta
+                  habitual de este asset ({durationAnomaliesData.total_route_groups} rutas con suficiente historial),
+                  filtrando primero recorridos atípicos previos, y marca los viajes cuya duración excede la banda
+                  de normalidad (2 desviaciones estándar sobre el promedio).
+                </p>
+                {durationAnomaliesData.route_patterns?.length > 0 && (
+                  <div className="table-scroll" style={{ marginBottom: 12 }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Ruta</th>
+                          <th>Viajes</th>
+                          <th>Promedio</th>
+                          <th>Mediana</th>
+                          <th>Banda normal</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {durationAnomaliesData.route_patterns.map((p) => (
+                          <tr key={`${p.origin_cluster_id}-${p.destination_cluster_id}`}>
+                            <td>#{p.origin_cluster_id} → #{p.destination_cluster_id}</td>
+                            <td>{p.total_trips}</td>
+                            <td>{p.duration_stats.mean_hours.toFixed(2)} h</td>
+                            <td>{p.duration_stats.median_hours.toFixed(2)} h</td>
+                            <td style={{ fontSize: 11 }}>{p.normal_band_hours[0].toFixed(2)}–{p.normal_band_hours[1].toFixed(2)} h</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {durationAnomaliesData.alerts?.length > 0 ? (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Ruta</th>
+                          <th>Inicio del viaje</th>
+                          <th>Severidad</th>
+                          <th>Duración</th>
+                          <th>Esperado</th>
+                          <th>% sobre promedio</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {durationAnomaliesData.alerts.map((a, i) => (
+                          <tr key={i}>
+                            <td>#{a.origin_cluster_id} → #{a.destination_cluster_id}</td>
+                            <td style={{ fontSize: 11 }}>{a.start_timestamp ? new Date(a.start_timestamp).toLocaleString('es-MX') : '—'}</td>
+                            <td>
+                              <span className={a.severity === 'alta' ? 'warning' : ''}>{a.severity}</span>
+                            </td>
+                            <td><strong>{a.duration_hours.toFixed(2)} h</strong></td>
+                            <td style={{ fontSize: 11 }}>{a.expected_mean_hours.toFixed(2)} h (banda {a.normal_band_hours[0].toFixed(2)}–{a.normal_band_hours[1].toFixed(2)})</td>
+                            <td>{a.pct_over_average != null ? `+${a.pct_over_average}%` : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="subtitle">Sin demoras anómalas detectadas en las rutas con historial suficiente.</p>
+                )}
+              </div>
+            )}
+            {durationAnomaliesData?.error && (
+              <p className="subtitle">Error: {durationAnomaliesData.error}</p>
+            )}
 
             <h3>Puntos de la ruta seleccionada</h3>
             {expandedRouteIndex === null ? (
@@ -5375,6 +5621,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                         <th>Servidor recibió en</th>
                         <th>Duración sin señal</th>
                         <th>Registros acumulados</th>
+                        <th>Carretera / tramo</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5390,6 +5637,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                             </strong>
                           </td>
                           <td>{seg.num_records}</td>
+                          <td>{seg.road_name || '—'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -5728,6 +5976,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                       <th>Lugar OSM</th>
                       <th>Confianza</th>
                       <th>Coordenadas</th>
+                      <th>Deriva inicio→fin</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -5774,12 +6023,133 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                           <td style={{ fontSize: 11 }}>
                             {s.latitude != null ? `${s.latitude.toFixed(4)}, ${s.longitude.toFixed(4)}` : '—'}
                           </td>
+                          <td style={{ fontSize: 11 }}>
+                            {s.start_end_distance_m != null ? `${s.start_end_distance_m.toFixed(0)} m` : '—'}
+                          </td>
                         </tr>
                       )
                     })}
                   </tbody>
                 </table>
               </div>
+            )}
+
+            <div className="toolbar" style={{ marginTop: 16 }}>
+              <button onClick={loadStopAnomalies} disabled={stopAnomaliesLoading}>
+                {stopAnomaliesLoading ? 'Comparando contra historial…' : '🔎 Comparar contra patrón histórico del asset'}
+              </button>
+            </div>
+
+            {stopAnomaliesData && !stopAnomaliesData.error && (
+              <div style={{ marginTop: 12 }}>
+                <h3>
+                  Paradas atípicas vs. historial propio del asset{' '}
+                  <span className={stopAnomaliesData.atypical_count > 0 ? 'warning' : 'success'}>
+                    ({stopAnomaliesData.atypical_count} de {stopAnomaliesData.total_stops})
+                  </span>
+                </h3>
+                <p className="subtitle">
+                  Compara cada parada contra el propio histórico de ubicaciones frecuentes, categorías y
+                  duraciones típicas de este assetId+clientId (precursor del caso de paradas atípicas por conductor+ruta).
+                </p>
+                {stopAnomaliesData.stops.filter((s) => s.is_atypical).length > 0 ? (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Inicio</th>
+                          <th>Duración</th>
+                          <th>Categoría</th>
+                          <th>Coordenadas</th>
+                          <th>Motivo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stopAnomaliesData.stops.filter((s) => s.is_atypical).map((s) => (
+                          <tr key={s.stop_index}>
+                            <td>{s.stop_index + 1}</td>
+                            <td style={{ fontSize: 11 }}>{s.start_timestamp ? new Date(s.start_timestamp).toLocaleString('es-MX') : '—'}</td>
+                            <td><strong className="warning">{s.duration_minutes.toFixed(1)} min</strong></td>
+                            <td>{s.final_category.replace(/_/g, ' ')}</td>
+                            <td style={{ fontSize: 11 }}>
+                              {s.latitude != null ? `${s.latitude.toFixed(4)}, ${s.longitude.toFixed(4)}` : '—'}
+                            </td>
+                            <td style={{ fontSize: 11 }}>
+                              {s.atypical_reasons.map((r) => r.replace(/_/g, ' ')).join(', ')}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="subtitle">Sin paradas atípicas detectadas — el comportamiento coincide con el historial del asset.</p>
+                )}
+              </div>
+            )}
+            {stopAnomaliesData?.error && (
+              <p className="subtitle">Error: {stopAnomaliesData.error}</p>
+            )}
+
+            <div className="toolbar" style={{ marginTop: 16 }}>
+              <button onClick={loadRouteAnomalies} disabled={routeAnomaliesLoading}>
+                {routeAnomaliesLoading ? 'Analizando viajes por ruta…' : '🚩 Paradas atípicas por ruta habitual (Caso 4)'}
+              </button>
+            </div>
+
+            {routeAnomaliesData && !routeAnomaliesData.error && (
+              <div style={{ marginTop: 12 }}>
+                <h3>
+                  Viajes atípicos por ruta habitual{' '}
+                  <span className={routeAnomaliesData.atypical_trip_count > 0 ? 'warning' : 'success'}>
+                    ({routeAnomaliesData.atypical_trip_count} de {routeAnomaliesData.total_trips_evaluated})
+                  </span>
+                </h3>
+                <p className="subtitle">
+                  Agrupa los viajes de este asset por ruta habitual (origen/destino, {routeAnomaliesData.total_route_groups}{' '}
+                  rutas con suficiente historial) y compara cada viaje contra el número, ubicación, tipo, duración y
+                  secuencia de paradas típicos de esa ruta específica. <strong>Nota:</strong> el dataset no tiene
+                  driverId — esto es assetId + ruta, sin segmentación por conductor.
+                </p>
+                {routeAnomaliesData.alerts?.length > 0 ? (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Ruta (origen→destino)</th>
+                          <th>Inicio del viaje</th>
+                          <th>Severidad</th>
+                          <th>Paradas</th>
+                          <th>Rango esperado</th>
+                          <th>Motivo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {routeAnomaliesData.alerts.map((a, i) => (
+                          <tr key={i}>
+                            <td>#{a.origin_cluster_id} → #{a.destination_cluster_id}</td>
+                            <td style={{ fontSize: 11 }}>{a.start_timestamp ? new Date(a.start_timestamp).toLocaleString('es-MX') : '—'}</td>
+                            <td>
+                              <span className={a.severity === 'alta' ? 'warning' : ''}>
+                                {a.severity}
+                              </span>
+                            </td>
+                            <td>{a.trip_stop_count}</td>
+                            <td style={{ fontSize: 11 }}>{a.expected_stop_count_range[0]}–{a.expected_stop_count_range[1]}</td>
+                            <td style={{ fontSize: 11 }}>{a.reasons.map((r) => r.replace(/_/g, ' ')).join(', ')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="subtitle">Sin viajes atípicos detectados en las rutas con historial suficiente.</p>
+                )}
+              </div>
+            )}
+            {routeAnomaliesData?.error && (
+              <p className="subtitle">Error: {routeAnomaliesData.error}</p>
             )}
           </>
         )}

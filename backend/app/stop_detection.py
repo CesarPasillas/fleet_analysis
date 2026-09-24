@@ -13,6 +13,11 @@ import requests
 _MIN_STOP_SECONDS: float = 300.0
 _MAX_STEP_M: float = 50.0
 _MIN_RECORDS: int = 3
+_MAX_RALENTI_DRIFT_M: float = 150.0
+# _MAX_STEP_M solo acota el paso entre puntos consecutivos; pasos pequeños en la misma
+# dirección pueden acumular deriva. Si un segmento clasificado como "ralenti" por EventType
+# se desplazó más que esto de inicio a fin, es más probable que sea desplazamiento lento
+# (tráfico) mal reportado como ralentí — no se confía en el EventType en ese caso.
 _GEO_RADIUS_M: int = 300
 _MAX_GEO_CALLS: int = 100
 _OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
@@ -174,6 +179,9 @@ def _build_stop_record(
     keys: list[str] = []
     if key_col:
         keys = seg[key_col].dropna().unique().tolist()
+    start_end_distance_m = _haversine_m(
+        lats[seg_s], lons[seg_s], lats[seg_e], lons[seg_e]
+    )
     return {
         "stop_index": stop_index,
         "start_timestamp": _iso(t0),
@@ -184,6 +192,7 @@ def _build_stop_record(
         "longitude": float(np.median(lons[seg_s: seg_e + 1])),
         "num_records": seg_e - seg_s + 1,
         "event_keys": keys,
+        "start_end_distance_m": round(start_end_distance_m, 1),
     }
 
 
@@ -238,6 +247,14 @@ def _classify_event(keys: list[str]) -> str | None:
         if k in _EVENT_CATEGORIES:
             return _EVENT_CATEGORIES[k]
     return None
+
+
+def _validate_ralenti(event_cat: str | None, start_end_distance_m: float) -> str | None:
+    """Un EventType de ralentí no es confiable si el vehículo se desplazó de inicio a fin
+    del segmento: es más probable que sea tráfico lento mal reportado como ralentí."""
+    if event_cat == "ralenti" and start_end_distance_m > _MAX_RALENTI_DRIFT_M:
+        return None
+    return event_cat
 
 
 def _build_overpass_query(lat: float, lon: float) -> str:
@@ -548,6 +565,7 @@ def detect_and_classify_stops(
     geo_calls = 0
     for stop in stops:
         event_cat = _classify_event(stop["event_keys"])
+        event_cat = _validate_ralenti(event_cat, stop["start_end_distance_m"])
         geo_cat, geo_place, nearby_address, geo_calls = _query_geo_for_stop(
             stop, use_geo, geo_calls, max_geo_calls
         )

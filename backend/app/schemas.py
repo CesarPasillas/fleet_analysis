@@ -137,6 +137,10 @@ class CompleteRoute(BaseModel):
     is_primary: bool = False
     start_index: int
     end_index: int
+    start_reason: str | None = None
+    end_reason: str | None = None
+    start_confirmed_by_event: bool = False
+    end_confirmed_by_event: bool = False
     components: list[dict[str, Any]]
 
 
@@ -188,6 +192,7 @@ class SignalLossSegment(BaseModel):
     duration_minutes: float
     num_records: int
     coordinates: list[list[float]] = []
+    road_name: str | None = None
 
 
 class SignalLossPoint(BaseModel):
@@ -245,6 +250,7 @@ class VehicleStop(BaseModel):
     nearby_place: str | None = None
     final_category: str
     confidence: str
+    start_end_distance_m: float | None = None
 
 
 class StopCategorySummary(BaseModel):

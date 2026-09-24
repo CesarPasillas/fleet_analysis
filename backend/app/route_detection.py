@@ -1205,6 +1205,10 @@ def _append_complete(
     start_index: int,
     end_index: int,
     road_index: list[dict[str, Any]],
+    start_reason: str,
+    end_reason: str,
+    start_confirmed_by_event: bool,
+    end_confirmed_by_event: bool,
 ) -> None:
     start_timestamp = segment.iloc[0]["orden_timestamp"]
     end_timestamp = segment.iloc[-1]["orden_timestamp"]
@@ -1247,6 +1251,10 @@ def _append_complete(
             "road_match_ratio": float(road_match_ratio),
             "start_index": int(start_index),
             "end_index": int(end_index),
+            "start_reason": start_reason,
+            "end_reason": end_reason,
+            "start_confirmed_by_event": start_confirmed_by_event,
+            "end_confirmed_by_event": end_confirmed_by_event,
             "components": [
                 {
                     "order_timestamp": _to_iso(row.get("orden_timestamp")),
@@ -1268,56 +1276,252 @@ def _append_complete(
     )
 
 
+def _append_rest_segment_if_valid(
+    rest_segments: list[tuple[int, int]],
+    labels: np.ndarray,
+    timestamps: np.ndarray,
+    segment_start: int,
+    segment_end: int,
+    min_records: int,
+    min_seconds: float,
+) -> None:
+    if segment_end - segment_start + 1 < min_records:
+        return
+
+    start_ts = timestamps[segment_start]
+    end_ts = timestamps[segment_end]
+    if pd.isna(start_ts) or pd.isna(end_ts):
+        return
+
+    duration_seconds = (pd.Timestamp(end_ts) - pd.Timestamp(start_ts)).total_seconds()
+    if duration_seconds < min_seconds:
+        return
+
+    rest_segments.append((int(labels[segment_start]), int(labels[segment_end])))
+
+
+def _compute_rest_segments(
+    filtered: pd.DataFrame,
+    max_step_m: float,
+    min_stop_seconds: float,
+    min_stop_records: int,
+) -> list[tuple[int, int]]:
+    """Contiguous stretches (as `filtered` index-label ranges) where the vehicle was
+    essentially stationary: consecutive-step haversine drift < max_step_m for at
+    least min_stop_records records spanning at least min_stop_seconds. Mirrors the
+    rest-segment criterion already validated in stop_detection.py::_raw_stops."""
+    gps_points = filtered.dropna(subset=["latitude", "longitude"])
+    if len(gps_points) < min_stop_records:
+        return []
+
+    labels = gps_points.index.to_numpy()
+    lats = gps_points["latitude"].to_numpy(dtype=float)
+    lons = gps_points["longitude"].to_numpy(dtype=float)
+    timestamps = gps_points["orden_timestamp"].to_numpy()
+
+    total_points = len(gps_points)
+    at_rest = np.zeros(total_points, dtype=bool)
+    at_rest[0] = True
+    for point_index in range(1, total_points):
+        step_m = _haversine_m(
+            lats[point_index - 1], lons[point_index - 1], lats[point_index], lons[point_index]
+        )
+        at_rest[point_index] = step_m < max_step_m
+
+    rest_segments: list[tuple[int, int]] = []
+    in_stop = False
+    segment_start = 0
+    for point_index in range(total_points):
+        if at_rest[point_index] and not in_stop:
+            in_stop = True
+            segment_start = point_index
+        elif not at_rest[point_index] and in_stop:
+            in_stop = False
+            _append_rest_segment_if_valid(
+                rest_segments, labels, timestamps, segment_start, point_index - 1, min_stop_records, min_stop_seconds
+            )
+    if in_stop:
+        _append_rest_segment_if_valid(
+            rest_segments, labels, timestamps, segment_start, total_points - 1, min_stop_records, min_stop_seconds
+        )
+
+    return rest_segments
+
+
+def _segment_trips_by_motion(
+    filtered: pd.DataFrame,
+    rest_segments: list[tuple[int, int]],
+) -> list[dict[str, Any]]:
+    """A trip is the movement stretch between two rest segments (or between the
+    edges of the whole record range when there's no rest segment there). Each trip
+    carries whether a real stop was actually observed at its start/end, so the
+    caller can tell "resumed after an observed stop" apart from "data just starts
+    here" without re-deriving it from the boundary list."""
+    if filtered.empty:
+        return []
+
+    all_labels = filtered.index.to_numpy()
+    first_label = int(all_labels[0])
+    last_label = int(all_labels[-1])
+
+    trips: list[dict[str, Any]] = []
+    cursor = first_label
+    cursor_has_rest_before = False
+
+    for rest_start, rest_end in rest_segments:
+        if rest_start > cursor:
+            segment = filtered.loc[cursor:rest_start]
+            if int(segment[["latitude", "longitude"]].dropna().shape[0]) >= 2:
+                trips.append(
+                    {
+                        "start_label": cursor,
+                        "end_label": rest_start,
+                        "start_has_rest_before": cursor_has_rest_before,
+                        "end_has_rest_after": True,
+                    }
+                )
+        cursor = max(cursor, rest_end)
+        cursor_has_rest_before = True
+
+    if cursor < last_label:
+        segment = filtered.loc[cursor:last_label]
+        if int(segment[["latitude", "longitude"]].dropna().shape[0]) >= 2:
+            trips.append(
+                {
+                    "start_label": cursor,
+                    "end_label": last_label,
+                    "start_has_rest_before": cursor_has_rest_before,
+                    "end_has_rest_after": False,
+                }
+            )
+
+    return trips
+
+
+def _extract_event_index(filtered: pd.DataFrame, event_type: int) -> tuple[np.ndarray, pd.DatetimeIndex]:
+    event_rows = filtered[filtered["eventType"] == event_type]
+    labels = event_rows.index.to_numpy()
+    timestamps = pd.DatetimeIndex(event_rows["orden_timestamp"])
+    return labels, timestamps
+
+
+def _find_nearest_event_label(
+    labels: np.ndarray,
+    timestamps: pd.DatetimeIndex,
+    target_timestamp: Any,
+    window_seconds: float,
+) -> int | None:
+    """Nearest 519/520 event to a motion-derived trip boundary, within tolerance.
+    Lets a real ignition event refine an approximate motion boundary when the
+    device reports it; falls back to None (pure motion boundary) otherwise —
+    which is the common case for devices that never emit IGNITION_OFF."""
+    if labels.size == 0 or pd.isna(target_timestamp):
+        return None
+
+    target = pd.Timestamp(target_timestamp)
+    position = timestamps.searchsorted(target)
+
+    best_label: int | None = None
+    best_diff = float("inf")
+    for candidate_position in (position - 1, position):
+        if candidate_position < 0 or candidate_position >= len(timestamps):
+            continue
+        candidate_timestamp = timestamps[candidate_position]
+        diff_seconds = abs((candidate_timestamp - target).total_seconds())
+        if diff_seconds < best_diff:
+            best_diff = diff_seconds
+            best_label = int(labels[candidate_position])
+
+    if best_label is None or best_diff > window_seconds:
+        return None
+    return best_label
+
+
 def _scan_routes(filtered: pd.DataFrame) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     routes_complete: list[dict[str, Any]] = []
     routes_incomplete: list[dict[str, Any]] = []
-    start_index: int | None = None
     road_index = _load_road_index()
 
-    for index, row in filtered.iterrows():
-        event_type = row["eventType"]
+    if filtered.empty:
+        return routes_complete, routes_incomplete
 
-        if event_type == EVENT_START:
-            # Keep the first open start event. Additional 519 events inside the same
-            # open segment are treated as intermediate records, not as a segment reset.
-            if start_index is None:
-                start_index = int(index)
-            continue
+    max_step_m = _read_float_env("ROUTE_MOTION_MAX_STEP_M", 50.0)
+    min_stop_seconds = _read_float_env("ROUTE_MOTION_MIN_STOP_SECONDS", 300.0)
+    min_stop_records = max(1, _read_int_env("ROUTE_MOTION_MIN_STOP_RECORDS", 3))
+    confirm_window_s = _read_float_env("ROUTE_EVENT_CONFIRM_WINDOW_S", 900.0)
 
-        if event_type != EVENT_END:
-            continue
+    rest_segments = _compute_rest_segments(
+        filtered=filtered,
+        max_step_m=max_step_m,
+        min_stop_seconds=min_stop_seconds,
+        min_stop_records=min_stop_records,
+    )
+    trips = _segment_trips_by_motion(filtered, rest_segments)
 
-        if start_index is None:
+    start_event_labels, start_event_timestamps = _extract_event_index(filtered, EVENT_START)
+    end_event_labels, end_event_timestamps = _extract_event_index(filtered, EVENT_END)
+
+    for trip in trips:
+        motion_start_label = trip["start_label"]
+        motion_end_label = trip["end_label"]
+        motion_start_timestamp = filtered.loc[motion_start_label, "orden_timestamp"]
+        motion_end_timestamp = filtered.loc[motion_end_label, "orden_timestamp"]
+
+        confirmed_start_label = _find_nearest_event_label(
+            start_event_labels, start_event_timestamps, motion_start_timestamp, confirm_window_s
+        )
+        if confirmed_start_label is not None and confirmed_start_label > motion_end_label:
+            confirmed_start_label = None
+
+        confirmed_end_label = _find_nearest_event_label(
+            end_event_labels, end_event_timestamps, motion_end_timestamp, confirm_window_s
+        )
+        if confirmed_end_label is not None and confirmed_end_label < motion_start_label:
+            confirmed_end_label = None
+
+        if confirmed_start_label is not None:
+            start_index = confirmed_start_label
+            start_reason = "ignition_event"
+        else:
+            start_index = motion_start_label
+            start_reason = "resumed_after_stop" if trip["start_has_rest_before"] else "data_start"
+
+        if confirmed_end_label is not None:
+            end_index = confirmed_end_label
+            end_reason = "ignition_event"
+        else:
+            end_index = motion_end_label
+            end_reason = "stop_detected" if trip["end_has_rest_after"] else "data_end"
+
+        if end_index < start_index:
+            start_index, end_index = min(start_index, end_index), max(start_index, end_index)
+
+        if end_reason == "data_end":
             _append_incomplete(
                 routes_incomplete=routes_incomplete,
-                issue_type="fin_sin_inicio",
-                detail="Se encontró 520 sin un 519 abierto",
-                start_index=None,
-                end_index=int(index),
-                start_timestamp=None,
-                end_timestamp=row["orden_timestamp"],
+                issue_type="abierto_al_final_de_datos",
+                detail=(
+                    "El recorrido no cerró con una parada real (>=5 min sin desplazamiento) "
+                    "ni con un evento 520 antes de que terminaran los datos disponibles"
+                ),
+                start_index=int(start_index),
+                end_index=None,
+                start_timestamp=filtered.loc[start_index, "orden_timestamp"],
+                end_timestamp=None,
             )
             continue
 
-        segment = filtered.iloc[start_index : index + 1].copy()
+        segment = filtered.iloc[start_index : end_index + 1].copy()
         _append_complete(
             routes_complete=routes_complete,
             segment=segment,
             start_index=start_index,
-            end_index=int(index),
+            end_index=end_index,
             road_index=road_index,
-        )
-        start_index = None
-
-    if start_index is not None:
-        _append_incomplete(
-            routes_incomplete=routes_incomplete,
-            issue_type="inicio_sin_fin",
-            detail="La serie terminó y no se encontró 520",
-            start_index=int(start_index),
-            end_index=None,
-            start_timestamp=filtered.loc[start_index, "orden_timestamp"],
-            end_timestamp=None,
+            start_reason=start_reason,
+            end_reason=end_reason,
+            start_confirmed_by_event=confirmed_start_label is not None,
+            end_confirmed_by_event=confirmed_end_label is not None,
         )
 
     return routes_complete, routes_incomplete
