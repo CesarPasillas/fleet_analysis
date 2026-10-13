@@ -263,7 +263,7 @@ def _run_job() -> None:
         _log.error("No se pudo guardar global_coverage.json: %s", exc)
 
     _write_status("done", 1.0,
-                  f"Completado: {len(hotspots)} zonas · {structural} estructurales · {isolated} aisladas",
+                  f"Completado: {len(hotspots)} zonas · {len(structural_list)} estructurales · {len(isolated_list)} aisladas",
                   done=True)
     _log.info("Global coverage job done: %d hotspots", len(hotspots))
 

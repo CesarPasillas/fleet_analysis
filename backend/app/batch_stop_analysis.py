@@ -339,7 +339,7 @@ def _run_phase1(client_ids: list[int], record_count: int) -> dict[tuple[float, f
 
 # ── Phase 2: OSM classification ───────────────────────────────────────────────
 
-def _run_phase2(all_cells: list[tuple[tuple[float, float], dict]], record_count: int) -> None:
+def _run_phase2(all_cells: list[tuple[tuple[float, float], dict]], record_count: int, client_count: int) -> None:
     osm_candidates = [(lat, lon) for (lat, lon), _ in all_cells[:_MAX_OSM_LOCS]]
     osm_results: dict[tuple[float, float], tuple[str | None, str | None]] = {}
 
@@ -400,7 +400,7 @@ def _run_phase2(all_cells: list[tuple[tuple[float, float], dict]], record_count:
         c["pct"] = round(c["stop_count"] / total_stops * 100, 2) if total_stops else 0
 
     result = {
-        "total_clients":    len({c for _, cell in all_cells for c in [cell.get("unique_clients", 0)]}),
+        "total_clients":    client_count,
         "total_stop_cells": len(all_cells),
         "total_stops":      total_stops,
         "record_count":     record_count,
@@ -456,6 +456,7 @@ def _run_job(force: bool = False) -> None:
         try:
             p1 = json.loads(_PHASE1_PATH.read_text())
             accumulator = {(c["grid_lat"], c["grid_lon"]): c for c in p1["cells"]}
+            client_count = p1.get("client_count", 0)
             _log.info("Skipping phase 1 — loaded %d cells from disk", len(accumulator))
             _write_status("running", 0.70,
                           f"Fase 1 ya completada ({len(accumulator):,} zonas). Iniciando OSM…",
@@ -479,13 +480,14 @@ def _run_job(force: bool = False) -> None:
                       f"{len(all_clients)} clientes encontrados. Iniciando detección de paradas…",
                       record_count=record_count)
         accumulator = _run_phase1(all_clients, record_count)
+        client_count = len(all_clients)
         _write_status("running", 0.70,
                       f"Fase 1 completa: {len(accumulator):,} zonas de parada. Iniciando OSM…",
                       phase1_done=True, record_count=record_count)
 
     # Sort by stop count for OSM prioritization
     all_cells = sorted(accumulator.items(), key=lambda kv: -kv[1]["stop_count"])
-    _run_phase2(all_cells, record_count)
+    _run_phase2(all_cells, record_count, client_count)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

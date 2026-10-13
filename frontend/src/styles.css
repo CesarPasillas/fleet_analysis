@@ -13,7 +13,7 @@ body {
 }
 
 .page {
-  max-width: 900px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 24px;
 }
@@ -172,6 +172,18 @@ select {
   max-height: 520px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.inline-label > select,
+.inline-label > input {
+  max-width: 100%;
 }
 
 table {
