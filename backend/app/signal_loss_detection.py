@@ -6,9 +6,16 @@ import numpy as np
 import pandas as pd
 
 
-_SERVER_TOLERANCE_MS: int = 2_000    # 2 s → misma ráfaga de transmisión (ventana estricta)
+# Un registro "llegó tarde" si el servidor lo recibió más de _LATE_DELAY_SECONDS después de
+# tomarse (con señal la diferencia es de pocos segundos). Un corte es una serie seguida (en hora GPS)
+# de registros tardíos. Antes se buscaban ráfagas de registros recibidos con <= 2 s entre sí, pero
+# el dispositivo suelta lo acumulado poco a poco (asset 2728, 19-ene: 16:27–16:29) y la ráfaga se
+# partía: la tabla mostraba un pedazo del corte (16:19–16:28, 5 registros) en vez del corte real
+# (16:14–16:27, decenas de registros).
+_LATE_DELAY_SECONDS: float = 60.0
+_MERGE_GAP_SECONDS: float = 60.0     # registros a tiempo intercalados por menos que esto no cortan el corte
 _MIN_GPS_SPAN_SECONDS: float = 300.0 # 5 min → span GPS mínimo para calificar como pérdida real
-_MIN_BATCH_RECORDS: int = 3          # mínimo de registros en la misma ráfaga
+_MIN_LATE_RECORDS: int = 3           # mínimo de registros acumulados en el corte
 
 
 def _find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -38,18 +45,26 @@ def _iso(ms: float) -> str | None:
         return None
 
 
-def _assign_batch_ids(server_ms_sorted: np.ndarray, tolerance_ms: int) -> np.ndarray:
+def _late_runs(gps_ms: np.ndarray, late: np.ndarray, merge_gap_ms: float) -> list[tuple[int, int]]:
     """
-    Asigna IDs de ráfaga a registros ya ordenados por serverTimestamp.
-    Registros dentro de tolerance_ms entre sí comparten el mismo batch ID.
+    Series de registros tardíos (índices [i, j] en orden GPS). Dos series se unen si los registros
+    a tiempo que las separan cubren menos de merge_gap_ms (el dispositivo a veces manda alguno en vivo
+    en medio del corte).
     """
-    ids = np.ones(len(server_ms_sorted), dtype=np.int64)
-    batch = 1
-    for i in range(1, len(server_ms_sorted)):
-        if (server_ms_sorted[i] - server_ms_sorted[i - 1]) > tolerance_ms:
-            batch += 1
-        ids[i] = batch
-    return ids
+    runs: list[tuple[int, int]] = []
+    idx = np.flatnonzero(late)
+    if len(idx) == 0:
+        return runs
+    start = prev = int(idx[0])
+    for k in idx[1:]:
+        k = int(k)
+        if k == prev + 1 or gps_ms[k] - gps_ms[prev] <= merge_gap_ms:
+            prev = k
+            continue
+        runs.append((start, prev))
+        start = prev = k
+    runs.append((start, prev))
+    return runs
 
 
 def _empty_result(error: str | None = None) -> dict[str, Any]:
@@ -87,25 +102,29 @@ def _match_road_name(coords: list[list[float]]) -> str | None:
 
 
 def _build_segments(
-    batch_stats: pd.DataFrame,
-    loss_batch_ids: set[int],
     w: pd.DataFrame,
+    runs: list[tuple[int, int]],
     lat_col: str | None,
     lon_col: str | None,
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
-    for _, row in batch_stats[batch_stats["_batch_id"].isin(loss_batch_ids)].iterrows():
-        batch_rows = w[w["_batch_id"] == row["_batch_id"]]
+    for i, j in runs:
+        rows = w.iloc[i: j + 1]
+        late_rows = rows[rows["_is_late"]]
         coords: list[list[float]] = []
         if lat_col and lon_col:
-            coords = batch_rows[[lat_col, lon_col]].dropna().values.tolist()
+            coords = late_rows[[lat_col, lon_col]].dropna().values.tolist()
+        gps_min, gps_max = float(late_rows["_gps_ms"].min()), float(late_rows["_gps_ms"].max())
         segments.append(
             {
-                "gps_start": _iso(float(row["gps_min"])),
-                "gps_end": _iso(float(row["gps_max"])),
-                "server_received_at": _iso(float(row["srv_val"])),
-                "duration_minutes": round(float(row["gps_span_s"]) / 60.0, 2),
-                "num_records": int(row["count"]),
+                "gps_start": _iso(gps_min),
+                "gps_end": _iso(gps_max),
+                # Cuándo volvió la señal: primer registro acumulado que llegó al servidor.
+                "server_received_at": _iso(float(late_rows["_srv_ms"].min())),
+                "server_received_until": _iso(float(late_rows["_srv_ms"].max())),
+                "max_delay_minutes": round(float(late_rows["_diff_s"].max()) / 60.0, 1),
+                "duration_minutes": round((gps_max - gps_min) / 60000.0, 2),
+                "num_records": int(len(late_rows)),
                 "coordinates": coords,
                 "road_name": _match_road_name(coords),
             }
@@ -183,16 +202,18 @@ def _interpolate_missing_positions(all_points: list[dict[str, Any]]) -> None:
 
 def detect_signal_loss(
     df: pd.DataFrame,
-    server_tolerance_ms: int = _SERVER_TOLERANCE_MS,
+    late_delay_seconds: float = _LATE_DELAY_SECONDS,
     min_gps_span_seconds: float = _MIN_GPS_SPAN_SECONDS,
-    min_batch_records: int = _MIN_BATCH_RECORDS,
+    min_late_records: int = _MIN_LATE_RECORDS,
+    merge_gap_seconds: float = _MERGE_GAP_SECONDS,
 ) -> dict[str, Any]:
     """
     Detecta periodos sin señal comparando GPSTimeStamp vs ServerTimeStamp.
 
-    Señal: múltiples registros con GPSTimeStamps distintos llegan con el mismo
-    ServerTimeStamp (±server_tolerance_ms), indicando transmisión en lote tras
-    un periodo offline.
+    Sin señal, el dispositivo guarda las posiciones y las manda al recuperarla: el servidor las
+    recibe minutos después de tomarse. Un corte = serie seguida (en hora GPS) de registros que
+    llegaron más de late_delay_seconds tarde, con >= min_late_records registros y que abarca
+    >= min_gps_span_seconds de hora GPS.
     """
     if df is None or df.empty:
         return _empty_result()
@@ -209,30 +230,21 @@ def detect_signal_loss(
     if w.empty:
         return _empty_result()
 
-    # Asignar batch IDs ordenando por serverTimestamp
-    w_by_srv = w.sort_values("_srv_ms").reset_index(drop=True)
-    w_by_srv["_batch_id"] = _assign_batch_ids(
-        w_by_srv["_srv_ms"].values.astype(float), server_tolerance_ms
-    )
-    w = w_by_srv.sort_values("_gps_ms").reset_index(drop=True)
+    w = w.sort_values(["_gps_ms", "_srv_ms"]).reset_index(drop=True)
     w["_diff_s"] = (w["_srv_ms"] - w["_gps_ms"]) / 1000.0
+    w["_is_late"] = w["_diff_s"] > late_delay_seconds
 
-    batch_stats = (
-        w.groupby("_batch_id")
-        .agg(count=("_gps_ms", "count"), gps_min=("_gps_ms", "min"),
-             gps_max=("_gps_ms", "max"), srv_val=("_srv_ms", "first"))
-        .reset_index()
-    )
-    batch_stats["gps_span_s"] = (batch_stats["gps_max"] - batch_stats["gps_min"]) / 1000.0
+    runs = [
+        (i, j) for i, j in _late_runs(w["_gps_ms"].to_numpy(dtype=float), w["_is_late"].to_numpy(),
+                                      merge_gap_seconds * 1000.0)
+        if int(w["_is_late"].iloc[i: j + 1].sum()) >= min_late_records
+        and (w["_gps_ms"].iloc[j] - w["_gps_ms"].iloc[i]) / 1000.0 >= min_gps_span_seconds
+    ]
+    w["_is_loss"] = False
+    for i, j in runs:
+        w.loc[i:j, "_is_loss"] = w.loc[i:j, "_is_late"]
 
-    loss_mask = (
-        (batch_stats["count"] >= min_batch_records)
-        & (batch_stats["gps_span_s"] >= min_gps_span_seconds)
-    )
-    loss_batch_ids: set[int] = set(batch_stats.loc[loss_mask, "_batch_id"].tolist())
-    w["_is_loss"] = w["_batch_id"].isin(loss_batch_ids)
-
-    segments = _build_segments(batch_stats, loss_batch_ids, w, lat_col, lon_col)
+    segments = _build_segments(w, runs, lat_col, lon_col)
     all_points = _build_all_points(w, lat_col, lon_col)
     _interpolate_missing_positions(all_points)
 

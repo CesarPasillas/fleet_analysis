@@ -8,8 +8,11 @@ import pandas as pd
 from app.signal_loss_detection import detect_signal_loss
 
 _MAX_FLEET_SPEED_KMH: float = 120.0
-_MIN_STATIONARY_MINUTES: float = 10.0
-_MAX_STATIONARY_SPEED_KMH: float = 5.0
+# Detenido = el punto con señal después del corte está a menos de esto del de antes. Antes se
+# exigía además >= 10 min y la categoría se llamaba "apagado_en_reposo": un corte de 8 min con el
+# camión parado caía en "sin_cobertura", y el nombre sugería un apagado intencional cuando en el
+# asset 2728 eran estancias en una terminal (Celaya, 6–7 ene). Ahora se separa solo por distancia.
+_MAX_STATIONARY_DISTANCE_KM: float = 0.2
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -21,12 +24,12 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def _classify(speed_kmh: float, duration_minutes: float, max_speed_kmh: float) -> str:
+def _classify(speed_kmh: float, distance_km: float, max_speed_kmh: float) -> str:
     if speed_kmh > max_speed_kmh:
         return "salto_sospechoso"
-    if speed_kmh < _MAX_STATIONARY_SPEED_KMH and duration_minutes >= _MIN_STATIONARY_MINUTES:
-        return "apagado_en_reposo"
-    return "sin_cobertura"
+    if distance_km < _MAX_STATIONARY_DISTANCE_KM:
+        return "sin_senal_detenido"
+    return "sin_senal_en_movimiento"
 
 
 def _extract_anchor_points(
@@ -55,9 +58,11 @@ def classify_signal_loss_anomalies(
     Extiende detect_signal_loss con clasificación de anomalías por segmento.
 
     Categorías:
-      - sin_cobertura    → pérdida de señal normal (zona sin red)
-      - salto_sospechoso → velocidad implícita entre punto anterior/posterior > max_speed_kmh
-      - apagado_en_reposo→ gap largo con desplazamiento mínimo (dispositivo apagado adrede)
+      - sin_senal_en_movimiento → el camión avanzó durante el corte (zona sin red en el camino)
+      - sin_senal_detenido      → el camión no se movió (< _MAX_STATIONARY_DISTANCE_KM): estacionado
+                                  con señal débil o el aparato dejó de transmitir
+      - salto_sospechoso        → velocidad implícita entre punto anterior/posterior > max_speed_kmh
+      - sin_datos               → falta el punto con señal antes o después del corte
     """
     loss_result = detect_signal_loss(df)
 
@@ -75,7 +80,7 @@ def classify_signal_loss_anomalies(
 
         dist_km: float | None = None
         speed_kmh: float | None = None
-        category = "sin_cobertura"
+        category = "sin_datos"
 
         if pt_before and pt_after:
             dist_km = _haversine_km(
@@ -85,7 +90,7 @@ def classify_signal_loss_anomalies(
             duration_h = seg["duration_minutes"] / 60.0
             if duration_h > 0:
                 speed_kmh = dist_km / duration_h
-                category = _classify(speed_kmh, seg["duration_minutes"], max_speed_kmh)
+                category = _classify(speed_kmh, dist_km, max_speed_kmh)
 
         anomalies.append(
             {

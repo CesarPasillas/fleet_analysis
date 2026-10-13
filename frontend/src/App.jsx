@@ -19,6 +19,39 @@ const SECTION4_COLUMNS_ORDER = [
 
 const GAP_ALERT_SECONDS = 120
 
+// Etiqueta legible de una ruta origen → destino ("Lugar 1 · Guadalajara → Lugar 3 · Colima").
+// Los cluster_id internos empiezan en 0 y se numeran aparte para origen y destino; el backend
+// añade place_n/place_name con numeración común desde 1. Si no vienen, se usa id + 1.
+// Hora del centro de México ("19/01/2024 16:03:36"), sin importar la zona horaria de la
+// computadora que abre la app. El backend manda ISO en UTC.
+const MX_TZ = 'America/Mexico_City'
+function fmtMx(value, withDate = true) {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return String(value)
+  return d.toLocaleString('es-MX', {
+    timeZone: MX_TZ, hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+    ...(withDate ? { year: 'numeric', month: '2-digit', day: '2-digit' } : {}),
+  })
+}
+
+// Categoría de un corte sin señal. Si viene una categoría anterior al cambio del 12-oct-2026
+// ("sin_cobertura", "apagado_en_reposo", p. ej. datos cargados antes de recargar la página), se
+// recalcula con la regla actual por distancia y velocidad para no mostrarla como desconocida.
+const SIGNAL_LOSS_CATEGORIES = ['sin_senal_en_movimiento', 'sin_senal_detenido', 'salto_sospechoso', 'sin_datos']
+function signalLossCategory(a, maxSpeedKmh = 120) {
+  if (SIGNAL_LOSS_CATEGORIES.includes(a.category)) return a.category
+  if (a.distance_km == null) return 'sin_datos'
+  if (a.implied_speed_kmh != null && a.implied_speed_kmh > maxSpeedKmh) return 'salto_sospechoso'
+  return a.distance_km < 0.2 ? 'sin_senal_detenido' : 'sin_senal_en_movimiento'
+}
+
+function routeLabel(p) {
+  const o = `Lugar ${p.origin_place_n ?? p.origin_cluster_id + 1}${p.origin_place_name ? ` · ${p.origin_place_name}` : ''}`
+  const d = `Lugar ${p.destination_place_n ?? p.destination_cluster_id + 1}${p.destination_place_name ? ` · ${p.destination_place_name}` : ''}`
+  return `${o} → ${d}`
+}
+
 function App() {
   const [activeMenu, setActiveMenu] = useState('dashboard')
   const [carreterasCatalog, setCarreterasCatalog] = useState([])
@@ -222,7 +255,7 @@ function App() {
 const locs = ${safeLocs};
 const CAT_COLORS = ${safeColors};
 const map = L.map('map');
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors'}).addTo(map);
 const bounds = [];
 locs.forEach((l,i) => {
   const color = CAT_COLORS[l.dominant_cat] || '#94a3b8';
@@ -285,7 +318,7 @@ html,body{margin:0;padding:0;height:100%;font-family:Inter,system-ui,sans-serif;
 <script>
 const hotspots = ${safeHotspots};
 const map = L.map('map');
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors'}).addTo(map);
 const structLayer = L.layerGroup().addTo(map);
 const isolLayer = L.layerGroup().addTo(map);
 const bounds = [];
@@ -911,7 +944,9 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
       return String(value)
     }
 
+    // Siempre hora del centro de México (los datos son de México), no la zona de la computadora.
     return date.toLocaleString('es-MX', {
+      timeZone: 'America/Mexico_City',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -1519,9 +1554,9 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             const points = ${safePointsJson};
             const map = L.map('map');
 
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
               maxZoom: 19,
-              attribution: '&copy; OpenStreetMap contributors',
+              attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors',
             }).addTo(map);
 
             const latlngs = points.map((point) => [point.latitude, point.longitude]);
@@ -1677,9 +1712,9 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
               iconAnchor: [23, 11],
             });
 
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
               maxZoom: 19,
-              attribution: '&copy; OpenStreetMap contributors',
+              attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors',
             }).addTo(map);
 
             const escapeHtml = (value) =>
@@ -1972,9 +2007,9 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
 
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
               maxZoom: 19,
-              attribution: '&copy; OpenStreetMap contributors',
+              attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors',
             }).addTo(map);
 
             // Separate GPS and lost-signal points
@@ -2519,7 +2554,7 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
       return
     }
 
-    const anomalies = signalLossAnomalies?.anomalies || []
+    const anomalies = (signalLossAnomalies?.anomalies || []).map((a) => ({ ...a, category: signalLossCategory(a) }))
     const mapWindow = window.open('', '_blank', 'width=1200,height=800')
     if (!mapWindow) {
       setError('No se pudo abrir la ventana del mapa. Revisa el bloqueador de popups.')
@@ -2532,6 +2567,12 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
 
     const safeGpsJson = JSON.stringify(allPts).replaceAll('</', String.raw`<\/`)
     const safeAnomalyJson = JSON.stringify(anomalies).replaceAll('</', String.raw`<\/`)
+    // Recorridos de la sección 3 (mismo rango de fechas) para el panel lateral; n = su número en "Ver ruta".
+    const mapRoutes = (routeDetection?.complete_routes || []).map((r, i) => ({
+      n: i + 1, start: r.start_timestamp, end: r.end_timestamp,
+      km: r.distance_km, h: r.duration_hours,
+    }))
+    const safeRoutesJson = JSON.stringify(mapRoutes).replaceAll('</', String.raw`<\/`)
 
     const htmlContent = `
       <!doctype html>
@@ -2544,7 +2585,19 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
           <style>
             html,body{margin:0;padding:0;height:100%;font-family:Inter,system-ui,sans-serif;}
-            #map{width:100%;height:calc(100% - 56px);}
+            .main{display:flex;height:calc(100% - 56px);}
+            #map{flex:1;height:100%;}
+            #side{width:330px;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;font-size:12px;color:#111827;background:#fff;}
+            #side h3{margin:0;font-size:13px;}
+            #side .top{padding:10px 12px;border-bottom:1px solid #e5e7eb;display:flex;flex-direction:column;gap:6px;}
+            #side .top .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+            #side button{font:inherit;padding:3px 8px;border:1px solid #d1d5db;border-radius:6px;background:#fff;cursor:pointer;}
+            #rlist{overflow:auto;flex:1;}
+            .ritem{padding:7px 12px;border-bottom:1px solid #f1f5f9;cursor:pointer;}
+            .ritem:hover{background:#f1f5f9;} .ritem.sel{background:#e0e7ff;}
+            .ritem .sub{color:#6b7280;} .ritem .cuts{font-weight:700;color:#5b21b6;}
+            #rdetail{padding:10px 12px;border-top:1px solid #e5e7eb;max-height:38%;overflow:auto;}
+            #rdetail ol{margin:4px 0 0;padding-left:18px;} #rdetail li{margin-bottom:4px;}
             .header{height:56px;display:flex;align-items:center;justify-content:space-between;
               padding:0 16px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:13px;color:#111827;}
           </style>
@@ -2553,15 +2606,31 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
           <div class="header">
             <span>${title} · GPS reales: ${gpsPts.length} · sin GPS: ${lostCount} · estimados: ${estCount}</span>
           </div>
-          <div id="map"></div>
+          <div class="main">
+            <aside id="side">
+              <div class="top">
+                <h3>Recorridos (sección 3)</h3>
+                <div class="row">
+                  <label><input type="checkbox" id="hideShort" checked/> ocultar &lt; 1 km</label>
+                  <button id="showAll">Ver todo</button>
+                </div>
+                <div id="rstats" style="color:#6b7280"></div>
+              </div>
+              <div id="rlist"></div>
+              <div id="rdetail" style="color:#6b7280">Elige un recorrido para resaltarlo en el mapa y ver sus cortes sin señal.</div>
+            </aside>
+            <div id="map"></div>
+          </div>
           <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
             integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
           <script>
             const allPts = ${safeGpsJson};
             const anomalies = ${safeAnomalyJson};
+            const routes = ${safeRoutesJson};
 
-            const map = L.map('map');
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            // Canvas: miles de puntos en SVG traban el navegador (17,363 en el asset 2728).
+            const map = L.map('map', { preferCanvas: true });
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
               maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
             }).addTo(map);
 
@@ -2572,6 +2641,9 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             const gpsLayer = L.layerGroup().addTo(map);
             const lossLayer = L.layerGroup().addTo(map);
             const estLayer  = L.layerGroup().addTo(map);
+            // Las líneas de los cortes van en un panel por debajo del de los puntos, para que los puntos queden encima.
+            map.createPane('cortesPane').style.zIndex = 390;
+            const cutsRenderer = L.canvas({ pane: 'cortesPane' });
 
             const allBounds = [];
 
@@ -2587,16 +2659,30 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             });
             if (cur.length > 0) sections.push(cur);
 
+            // Paleta sin naranjas, rojos ni amarillos: el mapa base pinta las carreteras en esos tonos.
+            const COV = {
+              tramo: '#1e3a8a',        // azul marino: recorrido con GPS
+              punto: '#14b8a6',        // turquesa: punto GPS real
+              puntoBorde: '#0f766e',
+              movimiento: '#7c3aed',   // violeta: sin señal, en movimiento
+              detenido: '#4ade80',     // verde claro: sin señal, detenido (negro y verde oscuro se perdían)
+              salto: '#0891b2',        // cian: salto sospechoso (el fucsia se confundía con el violeta)
+              sinDatos: '#94a3b8',     // gris
+            };
+            // Iconos con forma y símbolo propios (antes eran rayos que no decían nada).
+            // Reloj = posición real que llegó tarde; rombo con "?" = posición calculada (aproximada).
+            const ICON_TARDE = '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="' + COV.movimiento + '" stroke="#fff" stroke-width="1.5"/><path d="M8 4.2V8l2.6 1.6" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>';
+            const ICON_CALC = '<svg width="18" height="18" viewBox="0 0 18 18"><rect x="4" y="4" width="10" height="10" transform="rotate(45 9 9)" fill="#fff" stroke="' + COV.tramo + '" stroke-width="1.6" stroke-dasharray="2.2 1.6"/><text x="9" y="12.2" text-anchor="middle" font-size="8.5" font-weight="700" font-family="sans-serif" fill="' + COV.tramo + '">?</text></svg>';
             sections.forEach((sec) => {
               const ll = sec.map((p) => [p.latitude, p.longitude]);
               allBounds.push(...ll);
-              L.polyline(ll, { color: '#8b5cf6', weight: 3, opacity: 0.85 }).addTo(gpsLayer);
+              L.polyline(ll, { color: COV.tramo, weight: 3, opacity: 0.85 }).addTo(gpsLayer);
             });
 
             // GPS real markers (cyan dots)
             allPts.filter((p) => p.latitude != null && !p.is_signal_loss).forEach((p) => {
               L.circleMarker([p.latitude, p.longitude], {
-                radius: 3, color: '#0f766e', fillColor: '#06b6d4', fillOpacity: 0.9, weight: 1
+                radius: 3, color: COV.puntoBorde, fillColor: COV.punto, fillOpacity: 0.9, weight: 1
               }).addTo(gpsLayer).bindPopup(
                 '<b>GPS real</b><br/>gps: ' + escapeHtml(p.gps_timestamp) +
                 '<br/>diff: ' + p.diff_seconds + 's' +
@@ -2604,32 +2690,35 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
               );
             });
 
-            // --- 2. Puntos dentro de segmento sin señal con GPS real (⚡ morado) ---
+            // --- 2. Posiciones reales enviadas tarde (reloj violeta) ---
             const lostIconSmall = L.divIcon({
               className: '',
-              html: '<div style="background:#8b5cf6;color:#fff;border:2px solid #4c1d95;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
-              iconSize: [14, 14], iconAnchor: [7, 7],
+              html: ICON_TARDE,
+              iconSize: [16, 16], iconAnchor: [8, 8],
             });
             allPts.filter((p) => p.latitude != null && p.is_signal_loss).forEach((p) => {
               L.marker([p.latitude, p.longitude], { icon: lostIconSmall })
                 .addTo(lossLayer).bindPopup(
-                  '<b>⚡ GPS dentro de pérdida</b><br/>gps: ' + escapeHtml(p.gps_timestamp) +
-                  '<br/>diff: ' + p.diff_seconds + 's' +
+                  '<b>Posición real, enviada tarde (sin red)</b><br/>' +
+                  'El aparato tenía GPS pero no señal celular: guardó la posición y la mandó después.<br/>' +
+                  'gps: ' + escapeHtml(p.gps_timestamp) +
+                  '<br/>llegó al servidor ' + Math.round(p.diff_seconds / 60) + ' min después' +
                   '<br/>lat: ' + p.latitude + ' lon: ' + p.longitude
                 );
             });
 
-            // --- 3. Posiciones estimadas para puntos sin GPS (⚡ rosa) ---
+            // --- 3. Posiciones calculadas para registros sin GPS (rombo con "?") ---
             const estIcon = L.divIcon({
               className: '',
-              html: '<div style="background:#ec4899;color:#9d174d;border:2px solid #9d174d;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;">⚡</div>',
-              iconSize: [14, 14], iconAnchor: [7, 7],
+              html: ICON_CALC,
+              iconSize: [18, 18], iconAnchor: [9, 9],
             });
             allPts.filter((p) => p.latitude == null && p.estimated_latitude != null).forEach((p) => {
               const pos = [p.estimated_latitude, p.estimated_longitude];
               L.marker(pos, { icon: estIcon })
                 .addTo(estLayer).bindPopup(
-                  '<b>⚡ Sin GPS (posición estimada)</b><br/>' +
+                  '<b>Posición calculada (sin satélites)</b><br/>' +
+                  'El registro llegó sin coordenadas; la posición se calcula entre el punto con GPS anterior y el siguiente, según la hora.<br/>' +
                   'gps: ' + escapeHtml(p.gps_timestamp) + '<br/>' +
                   'diff: ' + p.diff_seconds + 's<br/>' +
                   'est lat: ' + p.estimated_latitude + '<br/>' +
@@ -2647,14 +2736,17 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                 [pa.latitude, pa.longitude],
               ];
               allBounds.push(...bridgeLl);
-              const cat = { salto_sospechoso: '⚠ Salto sospechoso', apagado_en_reposo: '⚠ Apagado en reposo', sin_cobertura: 'Sin cobertura' }[a.category] || a.category;
-              const color = a.category === 'sin_cobertura' ? '#8b5cf6'
-                          : a.category === 'apagado_en_reposo' ? '#991b1b'
-                          : '#dc2626';
-              L.polyline(bridgeLl, { color, weight: 2.5, opacity: 0.8, dashArray: '10,6' })
+              const cat = { salto_sospechoso: '⚠ Salto sospechoso', sin_senal_detenido: 'Sin señal, detenido', sin_senal_en_movimiento: 'Sin señal, en movimiento', sin_datos: 'Sin datos' }[a.category] || a.category;
+              const color = a.category === 'sin_senal_en_movimiento' ? COV.movimiento
+                          : a.category === 'sin_senal_detenido' ? COV.detenido
+                          : a.category === 'salto_sospechoso' ? COV.salto
+                          : COV.sinDatos;
+              // Contorno oscuro debajo para que la línea se vea sobre parques, calles o agua.
+              L.polyline(bridgeLl, { color: '#1f2937', weight: 7, opacity: 0.55, interactive: false, renderer: cutsRenderer }).addTo(lossLayer);
+              L.polyline(bridgeLl, { color, weight: 3.5, opacity: 1, dashArray: '10,6', renderer: cutsRenderer })
                 .addTo(lossLayer)
                 .bindPopup(
-                  '<b>Zona sin cobertura #' + (idx + 1) + '</b><br/>' +
+                  '<b>Corte sin señal #' + (idx + 1) + '</b><br/>' +
                   'Categoría: <b>' + escapeHtml(cat) + '</b><br/>' +
                   'Duración: ' + a.duration_minutes.toFixed(1) + ' min<br/>' +
                   'Distancia GPS: ' + (a.distance_km != null ? a.distance_km.toFixed(2) + ' km' : '—') + '<br/>' +
@@ -2664,11 +2756,13 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
               // Midpoint marker
               const midLat = (pb.latitude + pa.latitude) / 2;
               const midLon = (pb.longitude + pa.longitude) / 2;
-              const textColor   = a.category === 'sin_cobertura' ? '#2e1065' : '#fff';
-              const borderColor = a.category === 'sin_cobertura' ? '#4c1d95' : '#7f1d1d';
+              // Etiqueta: texto negro sobre un tono claro del color del corte, borde del color fuerte.
+              const tint = { [COV.movimiento]: '#ddd6fe', [COV.detenido]: '#bbf7d0', [COV.salto]: '#a5f3fc', [COV.sinDatos]: '#e2e8f0' }[color] || '#fff';
+              const textColor   = '#111827';
+              const borderColor = color;
               const lossIcon = L.divIcon({
                 className: '',
-                html: '<div style="background:' + color + ';color:' + textColor + ';border:2px solid ' + borderColor + ';border-radius:12px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap;">⚡ ' + a.duration_minutes.toFixed(0) + 'min</div>',
+                html: '<div style="background:' + tint + ';color:' + textColor + ';border:2px solid ' + borderColor + ';box-shadow:0 1px 3px rgba(0,0,0,.4);border-radius:12px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap;">' + a.duration_minutes.toFixed(0) + ' min sin señal</div>',
                 iconAnchor: [30, 10],
               });
               L.marker([midLat, midLon], { icon: lossIcon }).addTo(lossLayer);
@@ -2679,15 +2773,18 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             legend.onAdd = () => {
               const d = L.DomUtil.create('div');
               d.style.cssText = 'background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:8px 12px;font-size:12px;line-height:1.8;min-width:200px;';
+              const line = (c, style) => '<span style="display:inline-block;width:28px;border-top:3px ' + style + ' ' + c + ';vertical-align:middle;margin-right:6px"></span>';
+              const dot = (bg, border, txt, style) => '<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:' + bg + ';border:2px ' + (style || 'solid') + ' ' + border + ';color:' + (bg === '#fff' ? border : '#fff') + ';font-size:9px;font-weight:700;vertical-align:middle;margin:0 13px 0 7px">' + txt + '</span>';
               d.innerHTML =
                 '<b>Leyenda cobertura GPS</b><br/>' +
-                '<span style="color:#8b5cf6">━━</span> Tramo con GPS real<br/>' +
-                '<span style="color:#8b5cf6">┄┄</span> Brecha sin cobertura<br/>' +
-                '<span style="color:#dc2626">┄┄</span> Salto sospechoso<br/>' +
-                '<span style="color:#991b1b">┄┄</span> Apagado en reposo<br/>' +
-                '<span style="color:#06b6d4">●</span> Punto GPS real<br/>' +
-                '<span style="color:#8b5cf6">⚡</span> GPS dentro de pérdida<br/>' +
-                '<span style="color:#ec4899">⚡</span> Posición estimada (sin GPS)';
+                line(COV.tramo, 'solid') + 'Tramo con GPS real<br/>' +
+                line(COV.movimiento, 'dashed') + 'Sin señal, en movimiento<br/>' +
+                line(COV.detenido, 'dashed') + 'Sin señal, detenido<br/>' +
+                line(COV.salto, 'dashed') + 'Salto sospechoso<br/>' +
+                line(COV.sinDatos, 'dashed') + 'Sin datos / categoría anterior<br/>' +
+                dot(COV.punto, COV.puntoBorde, '') + 'Punto GPS real<br/>' +
+                '<span style="display:inline-block;vertical-align:middle;margin:0 12px 0 6px">' + ICON_TARDE + '</span>Posición real, enviada tarde (sin red)<br/>' +
+                '<span style="display:inline-block;vertical-align:middle;margin:0 11px 0 5px">' + ICON_CALC + '</span>Posición calculada (sin satélites)';
               return d;
             };
             legend.addTo(map);
@@ -2695,13 +2792,110 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             // --- Layer control ---
             L.control.layers(null, {
               'Tramos GPS': gpsLayer,
-              'Zonas sin cobertura': lossLayer,
-              'Estimados sin GPS': estLayer,
+              'Cortes sin señal': lossLayer,
+              'Posiciones calculadas (sin satélites)': estLayer,
             }, { collapsed: false }).addTo(map);
 
             if (allBounds.length > 0) {
               map.fitBounds(L.latLngBounds(allBounds), { padding: [24, 24] });
             }
+          
+            // --- Panel lateral: recorridos de la sección 3 ---
+            const MX = { timeZone: 'America/Mexico_City', hour12: false };
+            const fmtD = (iso) => new Date(iso).toLocaleString('es-MX', { ...MX, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+            const fmtT = (iso) => new Date(iso).toLocaleString('es-MX', { ...MX, hour: '2-digit', minute: '2-digit' });
+            const ptMs = allPts.map((p) => Date.parse(p.gps_timestamp));
+            const catName = { salto_sospechoso: 'salto sospechoso', sin_senal_detenido: 'detenido', sin_senal_en_movimiento: 'en movimiento', sin_datos: 'sin datos' };
+            routes.forEach((r) => {
+              r.t0 = Date.parse(r.start); r.t1 = Date.parse(r.end);
+              // Cortes que se cruzan con el horario del recorrido.
+              r.cuts = anomalies.filter((a) => Date.parse(a.gps_start) <= r.t1 && Date.parse(a.gps_end) >= r.t0);
+            });
+            routes.sort((x, y) => x.t0 - y.t0);
+            const selLayer = L.layerGroup().addTo(map);
+            let selected = null;
+
+            function renderList() {
+              const hide = document.getElementById('hideShort').checked;
+              const vis = routes.filter((r) => !hide || (r.km || 0) >= 1);
+              const withCuts = vis.filter((r) => r.cuts.length).length;
+              document.getElementById('rstats').textContent = vis.length + ' recorridos · ' + withCuts + ' con cortes sin señal';
+              document.getElementById('rlist').innerHTML = vis.map((r) =>
+                '<div class="ritem' + (selected === r ? ' sel' : '') + '" data-n="' + r.n + '">' +
+                '<b>#' + r.n + '</b> · ' + fmtD(r.start) + ' → ' + fmtT(r.end) +
+                '<div class="sub">' + (r.km || 0).toFixed(1) + ' km · ' + (r.h || 0).toFixed(1) + ' h' +
+                (r.cuts.length ? ' · <span class="cuts">' + r.cuts.length + ' corte' + (r.cuts.length > 1 ? 's' : '') + ' sin señal</span>' : '') +
+                '</div></div>').join('');
+              document.querySelectorAll('.ritem').forEach((el) => el.onclick = () => selectRoute(routes.find((r) => r.n === +el.dataset.n)));
+            }
+
+            const catColor = (c) => c === 'sin_senal_en_movimiento' ? COV.movimiento
+              : c === 'sin_senal_detenido' ? COV.detenido : c === 'salto_sospechoso' ? COV.salto : COV.sinDatos;
+            const catTint = (c) => ({ [COV.movimiento]: '#ddd6fe', [COV.detenido]: '#bbf7d0', [COV.salto]: '#a5f3fc' })[catColor(c)] || '#e2e8f0';
+            const baseLayers = [gpsLayer, lossLayer, estLayer];
+
+            // Al elegir un recorrido se ocultan las capas completas y se dibuja solo ese recorrido.
+            function selectRoute(r) {
+              selected = r;
+              selLayer.clearLayers();
+              baseLayers.forEach((l) => map.removeLayer(l));
+              // Primero la línea y después los puntos, para que los puntos queden encima.
+              const ll = [];
+              allPts.forEach((p, i) => {
+                if (p.latitude != null && ptMs[i] >= r.t0 && ptMs[i] <= r.t1) ll.push([p.latitude, p.longitude]);
+              });
+              if (ll.length > 1) {
+                L.polyline(ll, { color: '#fff', weight: 8, opacity: 0.9, interactive: false }).addTo(selLayer);
+                L.polyline(ll, { color: COV.tramo, weight: 4, opacity: 1, interactive: false }).addTo(selLayer);
+              }
+              r.cuts.forEach((a) => {
+                if (!a.point_before || !a.point_after) return;
+                const br = [[a.point_before.latitude, a.point_before.longitude], [a.point_after.latitude, a.point_after.longitude]];
+                const c = catColor(a.category);
+                L.polyline(br, { color: '#1f2937', weight: 7, opacity: 0.55, interactive: false }).addTo(selLayer);
+                L.polyline(br, { color: c, weight: 3.5, opacity: 1, dashArray: '10,6' }).addTo(selLayer)
+                  .bindPopup('<b>Corte sin señal</b><br/>' + fmtT(a.gps_start) + '–' + fmtT(a.gps_end) + ' · ' + a.duration_minutes.toFixed(1) + ' min<br/>' + (catName[a.category] || a.category));
+                L.marker([(br[0][0] + br[1][0]) / 2, (br[0][1] + br[1][1]) / 2], { icon: L.divIcon({ className: '',
+                  html: '<div style="background:' + catTint(a.category) + ';color:#111827;border:2px solid ' + c + ';box-shadow:0 1px 3px rgba(0,0,0,.4);border-radius:12px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap;">' + a.duration_minutes.toFixed(0) + ' min sin señal</div>',
+                  iconAnchor: [40, 10] }) }).addTo(selLayer);
+              });
+              allPts.forEach((p, i) => {
+                if (ptMs[i] < r.t0 || ptMs[i] > r.t1) return;
+                if (p.latitude != null) {
+                  if (p.is_signal_loss) {
+                    L.marker([p.latitude, p.longitude], { icon: L.divIcon({ className: '', html: ICON_TARDE, iconSize: [16, 16], iconAnchor: [8, 8] }) })
+                      .bindPopup('<b>Posición real, enviada tarde (sin red)</b><br/>' + fmtD(p.gps_timestamp) + '<br/>llegó al servidor ' + Math.round(p.diff_seconds / 60) + ' min después')
+                      .addTo(selLayer);
+                  } else {
+                    L.circleMarker([p.latitude, p.longitude], { radius: 3, color: COV.puntoBorde, fillColor: COV.punto, fillOpacity: 0.9, weight: 1 }).addTo(selLayer);
+                  }
+                } else if (p.estimated_latitude != null) {
+                  L.marker([p.estimated_latitude, p.estimated_longitude], { icon: L.divIcon({ className: '', html: ICON_CALC, iconSize: [18, 18], iconAnchor: [9, 9] }) })
+                    .bindPopup('<b>Posición calculada (sin satélites)</b><br/>' + fmtD(p.gps_timestamp)).addTo(selLayer);
+                }
+              });
+              if (ll.length > 1) map.fitBounds(L.latLngBounds(ll), { padding: [40, 40], maxZoom: 15 });
+              const items = r.cuts.map((a) =>
+                '<li>' + fmtT(a.gps_start) + '–' + fmtT(a.gps_end) + ' · ' + a.duration_minutes.toFixed(1) + ' min · ' + (catName[a.category] || a.category) + '</li>').join('');
+              document.getElementById('rdetail').innerHTML =
+                '<b>Recorrido #' + r.n + '</b> (solo este recorrido en el mapa)<br/>' + fmtD(r.start) + ' → ' + fmtD(r.end) + ' · ' + (r.km || 0).toFixed(1) + ' km' +
+                (r.cuts.length ? '<br/><b>Cortes sin señal:</b><ol>' + items + '</ol>' : '<br/>Sin cortes sin señal.') +
+                '<br/><i>“Ver todo” regresa al mapa completo.</i>';
+              document.getElementById('rdetail').style.color = '#111827';
+              renderList();
+              document.querySelector('.ritem.sel')?.scrollIntoView({ block: 'nearest' });
+            }
+
+            document.getElementById('hideShort').onchange = renderList;
+            document.getElementById('showAll').onclick = () => {
+              selected = null; selLayer.clearLayers();
+              baseLayers.forEach((l) => { if (!map.hasLayer(l)) l.addTo(map); });
+              document.getElementById('rdetail').innerHTML = 'Elige un recorrido para resaltarlo en el mapa y ver sus cortes sin señal.';
+              document.getElementById('rdetail').style.color = '#6b7280';
+              if (allBounds.length > 0) map.fitBounds(L.latLngBounds(allBounds), { padding: [24, 24] });
+              renderList();
+            };
+            renderList();
           </script>
         </body>
       </html>
@@ -2807,7 +3001,7 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
               if (!v) return '—';
               const d = new Date(v);
               if (isNaN(d.getTime())) return String(v);
-              return d.toLocaleString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+              return d.toLocaleString('es-MX', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
             };
 
             // Summary pills
@@ -2836,11 +3030,12 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
 
             // Signal loss background bands
             segments.forEach((seg) => {
-              const lossIdx = pts.reduce((acc, p, i) => { if (p.is_signal_loss) acc.push(i); return acc; }, []);
-              if (lossIdx.length === 0) return;
-              const x0 = xOf(lossIdx[0]);
-              const x1 = xOf(lossIdx[lossIdx.length - 1]);
-              svg.appendChild(mk('rect', { x: x0, y: PT, width: Math.max(x1 - x0, 4), height: iH, fill: 'rgba(239,68,68,0.08)' }));
+              // Franja de cada corte: de su primera a su última posición.
+              const t0 = Date.parse(seg.gps_start), t1 = Date.parse(seg.gps_end);
+              const i0 = pts.findIndex((p) => Date.parse(p.gps_timestamp) >= t0);
+              let i1 = -1; pts.forEach((p, i) => { if (Date.parse(p.gps_timestamp) <= t1) i1 = i; });
+              if (i0 < 0 || i1 < i0) return;
+              svg.appendChild(mk('rect', { x: xOf(i0), y: PT, width: Math.max(xOf(i1) - xOf(i0), 4), height: iH, fill: 'rgba(124,58,237,0.12)' }));
             });
 
             // Grid lines
@@ -2857,9 +3052,9 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
               svg.appendChild(label);
             });
 
-            // Threshold line (30 s)
-            const thY = yOf(30);
-            svg.appendChild(mk('line', { x1: PL, y1: thY, x2: W - PR, y2: thY, stroke: '#f59e0b', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }));
+            // Umbral (60 s), el mismo que usa la detección
+            const thY = yOf(60);
+            svg.appendChild(mk('line', { x1: PL, y1: thY, x2: W - PR, y2: thY, stroke: '#334155', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }));
 
             // Axes
             svg.appendChild(mk('line', { x1: PL, y1: PT, x2: PL, y2: PT + iH, stroke: '#475569', 'stroke-width': 1 }));
@@ -2872,7 +3067,7 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             // Dots
             const r = pts.length > 300 ? 1.5 : 3;
             pts.forEach((p, i) => {
-              const c = mk('circle', { cx: xOf(i).toFixed(1), cy: yOf(p.diff_seconds).toFixed(1), r, fill: p.is_signal_loss ? '#ef4444' : '#3b82f6' });
+              const c = mk('circle', { cx: xOf(i).toFixed(1), cy: yOf(p.diff_seconds).toFixed(1), r, fill: p.is_signal_loss ? '#7c3aed' : '#3b82f6' });
               c.innerHTML = '<title>Reg #' + (i+1) + ' | diff: ' + p.diff_seconds.toFixed(1) + 's | GPS: ' + fmtTs(p.gps_timestamp) + ' | Srv: ' + fmtTs(p.server_timestamp) + (p.is_signal_loss ? ' | SIN SEÑAL' : '') + '</title>';
               svg.appendChild(c);
             });
@@ -2880,7 +3075,7 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
             // Legend
             const legY = H - 8;
             [{cx: PL+10, fill:'#3b82f6', text:'Normal', tx: PL+18},
-             {cx: PL+80, fill:'#ef4444', text:'Sin señal', tx: PL+88}].forEach(({cx, fill, text, tx}) => {
+             {cx: PL+80, fill:'#7c3aed', text:'Sin señal', tx: PL+88}].forEach(({cx, fill, text, tx}) => {
               svg.appendChild(mk('circle', { cx, cy: legY, r: 4, fill }));
               const t = document.createElementNS(NS, 'text');
               t.setAttribute('x', tx); t.setAttribute('y', legY + 4);
@@ -2889,11 +3084,11 @@ if(bounds.length>0) map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
               svg.appendChild(t);
             });
             // threshold legend
-            svg.appendChild(mk('line', { x1: PL+150, y1: legY, x2: PL+168, y2: legY, stroke:'#f59e0b','stroke-width':1.5,'stroke-dasharray':'5 4'}));
+            svg.appendChild(mk('line', { x1: PL+150, y1: legY, x2: PL+168, y2: legY, stroke:'#334155','stroke-width':1.5,'stroke-dasharray':'5 4'}));
             const tl = document.createElementNS(NS, 'text');
             tl.setAttribute('x', PL+172); tl.setAttribute('y', legY+4);
             tl.setAttribute('fill', '#64748b'); tl.setAttribute('font-size', '11');
-            tl.textContent = 'Umbral 30 s'; svg.appendChild(tl);
+            tl.textContent = 'Umbral 1 min'; svg.appendChild(tl);
 
             // Segment table
             document.getElementById('seg-rows').innerHTML = segments.length === 0
@@ -3014,7 +3209,7 @@ const CAT_ICONS = {
 const fmtTs = (v) => {
   if (!v) return '—';
   const d = new Date(v);
-  return isNaN(d)?v:d.toLocaleString('es-MX',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+  return isNaN(d)?v:d.toLocaleString('es-MX',{timeZone:'America/Mexico_City',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
 };
 
 const haversinM = (a, b) => {
@@ -3031,7 +3226,7 @@ const nearestRoutePoint = (lat, lon) => {
 };
 
 const map = L.map('map');
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors'}).addTo(map);
 
 if (routePts.length >= 2) {
   L.polyline(routePts,{color:'#8b5cf6',weight:3,opacity:0.7}).addTo(map).bindTooltip('Ruta GPS',{sticky:true});
@@ -3485,9 +3680,9 @@ else map.setView([23.6,-102.5],5);
             const realRouteLayer = L.layerGroup().addTo(map);
             const gpsPointsLayer = L.layerGroup().addTo(map);
 
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
               maxZoom: 19,
-              attribution: '&copy; OpenStreetMap contributors',
+              attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors',
             }).addTo(map);
 
             const ROAD_SEGMENT_BUFFER_M = 1200;
@@ -3879,9 +4074,9 @@ else map.setView([23.6,-102.5],5);
               const roads = ${safeSegmentsJson};
               const map = L.map('map');
 
-              L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
                 maxZoom: 19,
-                attribution: '&copy; OpenStreetMap contributors',
+                attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors',
               }).addTo(map);
 
               const allPoints = [];
@@ -4020,7 +4215,7 @@ const SEV_WEIGHT = { alta:4.5, media:3.5, baja:3, aislada:2, ok:1.5 };
 const SEV_DOT_COLOR = { alta:'#dc2626', media:'#f97316', baja:'#2563eb', aislada:'#9ca3af', ok:'#22c55e' };
 
 const map = L.map('map');
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors'}).addTo(map);
 
 // Build road → polylines index (one road can have multiple segments)
 const roadPolylines = {};   // roadName → [polyline, ...]
@@ -4728,7 +4923,7 @@ renderList(allRoads);
 <script>
 const locs=\${safe};const CAT=\${safeC};
 const map=L.map('map');
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors'}).addTo(map);
 const bounds=[];
 locs.forEach((l,i)=>{
   const color=CAT[l.category]||'#94a3b8';
@@ -5125,8 +5320,8 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                       title="Clic para ver puntos de esta ruta"
                     >
                       <td>{route.is_primary ? 'SI' : ''}</td>
-                      <td>{route.start_timestamp || ''}</td>
-                      <td>{route.end_timestamp || ''}</td>
+                      <td>{fmtMx(route.start_timestamp)}</td>
+                      <td>{fmtMx(route.end_timestamp)}</td>
                       <td>
                         {describeRouteBoundary(route.start_reason)} → {describeRouteBoundary(route.end_reason)}
                       </td>
@@ -5174,13 +5369,18 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                   {learnedRoutesData.total_routes_used} de {learnedRoutesData.total_routes_input} recorridos agrupados por
                   origen/destino (radio {learnedRoutesData.origin_radius_km} km). El "punto de control" es la carretera
                   compartida por los recorridos hacia distintos destinos desde ese origen — proxy de caseta, ya que no hay
-                  dataset real de casetas.
+                  dataset real de casetas. Cada lugar tiene un número (desde 1) que es el mismo si aparece como
+                  origen o como destino; el nombre viene de OpenStreetMap.
                 </p>
                 {learnedRoutesData.origins?.length > 0 ? (
                   learnedRoutesData.origins.map((o) => (
                     <div key={o.origin_cluster_id} style={{ marginBottom: 14 }}>
                       <p style={{ marginBottom: 4 }}>
-                        <strong>Origen #{o.origin_cluster_id}</strong> ({o.lat.toFixed(4)}, {o.lon.toFixed(4)}) —{' '}
+                        <strong>Origen: Lugar {o.place_n ?? o.origin_cluster_id + 1}</strong>
+                        {o.place_name && <> · {o.place_name}</>}{' '}
+                        (<a href={`https://www.google.com/maps/search/?api=1&query=${o.lat},${o.lon}`} target="_blank" rel="noopener noreferrer">
+                          {o.lat.toFixed(4)}, {o.lon.toFixed(4)}
+                        </a>) —{' '}
                         {o.total_trips} viajes históricos
                         {o.checkpoint_road && (
                           <> · punto de control: <strong>{o.checkpoint_road}</strong></>
@@ -5201,8 +5401,16 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                           <tbody>
                             {o.destinations.map((d) => (
                               <tr key={d.destination_cluster_id}>
-                                <td>#{d.destination_cluster_id}</td>
-                                <td style={{ fontSize: 11 }}>{d.lat.toFixed(4)}, {d.lon.toFixed(4)}</td>
+                                <td>
+                                  <strong>Lugar {d.place_n ?? d.destination_cluster_id + 1}</strong>
+                                  {d.place_name && <> · {d.place_name}</>}
+                                  {d.place_n != null && d.place_n === o.place_n && <> (mismo lugar)</>}
+                                </td>
+                                <td style={{ fontSize: 11 }}>
+                                  <a href={`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lon}`} target="_blank" rel="noopener noreferrer">
+                                    {d.lat.toFixed(4)}, {d.lon.toFixed(4)}
+                                  </a>
+                                </td>
                                 <td>{d.trip_count}</td>
                                 <td><strong>{d.pct_of_origin_trips}%</strong></td>
                                 <td>{d.avg_distance_km != null ? `${d.avg_distance_km} km` : '—'}</td>
@@ -5258,7 +5466,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                       <tbody>
                         {durationAnomaliesData.route_patterns.map((p) => (
                           <tr key={`${p.origin_cluster_id}-${p.destination_cluster_id}`}>
-                            <td>#{p.origin_cluster_id} → #{p.destination_cluster_id}</td>
+                            <td style={{ whiteSpace: 'normal', minWidth: 220 }}>{routeLabel(p)}</td>
                             <td>{p.total_trips}</td>
                             <td>{p.duration_stats.mean_hours.toFixed(2)} h</td>
                             <td>{p.duration_stats.median_hours.toFixed(2)} h</td>
@@ -5285,7 +5493,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                       <tbody>
                         {durationAnomaliesData.alerts.map((a, i) => (
                           <tr key={i}>
-                            <td>#{a.origin_cluster_id} → #{a.destination_cluster_id}</td>
+                            <td style={{ whiteSpace: 'normal', minWidth: 220 }}>{routeLabel(a)}</td>
                             <td style={{ fontSize: 11 }}>{a.start_timestamp ? new Date(a.start_timestamp).toLocaleString('es-MX') : '—'}</td>
                             <td>
                               <span className={a.severity === 'alta' ? 'warning' : ''}>{a.severity}</span>
@@ -5536,8 +5744,8 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                   {routeDetection.incomplete_routes.map((issue) => (
                     <tr key={`incomplete-${issue.type}-${issue.start_index ?? 'na'}-${issue.end_index ?? 'na'}-${issue.start_timestamp || 'na'}`}>
                       <td>{issue.type}</td>
-                      <td>{issue.start_timestamp || ''}</td>
-                      <td>{issue.end_timestamp || ''}</td>
+                      <td>{fmtMx(issue.start_timestamp)}</td>
+                      <td>{fmtMx(issue.end_timestamp)}</td>
                       <td>{issue.detail}</td>
                     </tr>
                   ))}
@@ -5556,9 +5764,10 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
       <section className="card">
         <h2>4) Detección de desplazamientos sin señal (GPS vs Server timestamp)</h2>
         <p className="subtitle">
-          Identifica periodos donde el dispositivo perdió conectividad y transmitió registros en lote.
-          Señal: varios registros con <strong>GPSTimeStamp distintos</strong> llegan con el{' '}
-          <strong>mismo ServerTimeStamp</strong> (o muy cercanos).
+          Identifica periodos donde el dispositivo perdió conectividad: guardó las posiciones y las mandó
+          al recuperar la señal. Señal: registros que llegaron al servidor <strong>más de 1 minuto después</strong>{' '}
+          de tomarse (ServerTimeStamp − GPSTimeStamp); un corte es una serie seguida de ellos con al menos
+          3 registros y 5 minutos. Horas en hora del centro de México.
         </p>
 
         {signalLossLoading && (
@@ -5616,10 +5825,11 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                     <thead>
                       <tr>
                         <th>#</th>
-                        <th>GPS inicio (dispositivo)</th>
-                        <th>GPS fin (dispositivo)</th>
-                        <th>Servidor recibió en</th>
+                        <th title="Hora (del aparato) de la primera posición que guardó sin señal">Sin señal desde</th>
+                        <th title="Hora (del aparato) de la última posición que guardó sin señal">Sin señal hasta</th>
+                        <th title="Cuándo llegaron al servidor las posiciones guardadas: el aparato recuperó la señal">Llegaron al servidor</th>
                         <th>Duración sin señal</th>
+                        <th title="Máximo tiempo entre que se tomó una posición y que llegó al servidor">Retraso máx.</th>
                         <th>Registros acumulados</th>
                         <th>Carretera / tramo</th>
                       </tr>
@@ -5628,14 +5838,20 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                       {signalLossData.segments.map((seg, i) => (
                         <tr key={i}>
                           <td>{i + 1}</td>
-                          <td>{seg.gps_start || '—'}</td>
-                          <td>{seg.gps_end || '—'}</td>
-                          <td>{seg.server_received_at || '—'}</td>
+                          <td>{fmtMx(seg.gps_start)}</td>
+                          <td>{fmtMx(seg.gps_end, false)}</td>
+                          <td>
+                            {fmtMx(seg.server_received_at, false)}
+                            {seg.server_received_until && seg.server_received_until !== seg.server_received_at && (
+                              <> – {fmtMx(seg.server_received_until, false)}</>
+                            )}
+                          </td>
                           <td>
                             <strong className="warning">
                               {seg.duration_minutes.toFixed(1)} min
                             </strong>
                           </td>
+                          <td>{seg.max_delay_minutes != null ? `${seg.max_delay_minutes} min` : '—'}</td>
                           <td>{seg.num_records}</td>
                           <td>{seg.road_name || '—'}</td>
                         </tr>
@@ -5648,8 +5864,11 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                   <>
                     <h3>Clasificación de anomalías por segmento</h3>
                     <p className="subtitle">
-                      Velocidad implícita = distancia entre último punto antes del gap y primer punto después ÷ duración.
-                      Umbral: {signalLossAnomalies.max_speed_kmh_threshold} km/h.
+                      Velocidad implícita = distancia entre el último punto con señal antes del corte y el primero
+                      después ÷ duración del corte. <strong>En movimiento</strong>: el camión avanzó;{' '}
+                      <strong>detenido</strong>: los dos puntos están a menos de 200 m;{' '}
+                      <strong>salto sospechoso</strong>: más de {signalLossAnomalies.max_speed_kmh_threshold} km/h,
+                      imposible para un camión.
                     </p>
                     <div className="table-scroll">
                       <table>
@@ -5660,22 +5879,28 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                             <th>Duración</th>
                             <th>Distancia GPS</th>
                             <th>Vel. implícita</th>
-                            <th>Punto anterior</th>
-                            <th>Punto posterior</th>
+                            <th title="Último punto con señal antes del corte">Punto anterior</th>
+                            <th title="Primer punto con señal después del corte">Punto posterior</th>
                           </tr>
                         </thead>
                         <tbody>
                           {signalLossAnomalies.anomalies.map((a, i) => {
                             const categoryLabel = {
                               salto_sospechoso: '⚠ Salto sospechoso',
-                              apagado_en_reposo: '⚠ Apagado en reposo',
-                              sin_cobertura: 'Sin cobertura',
-                            }[a.category] ?? a.category
-                            const isAlert = a.category !== 'sin_cobertura'
+                              sin_senal_detenido: 'Sin señal, detenido',
+                              sin_senal_en_movimiento: 'Sin señal, en movimiento',
+                              sin_datos: 'Sin datos',
+                            }[signalLossCategory(a)]
+                            const isAlert = signalLossCategory(a) === 'salto_sospechoso'
                             const fmtCoord = (p) =>
-                              p?.latitude != null
-                                ? `${p.latitude.toFixed(4)}, ${p.longitude.toFixed(4)}`
-                                : '—'
+                              p?.latitude != null ? (
+                                <>
+                                  {fmtMx(p.gps_timestamp, false)} ·{' '}
+                                  <a href={`https://www.google.com/maps/search/?api=1&query=${p.latitude},${p.longitude}`} target="_blank" rel="noopener noreferrer">
+                                    {p.latitude.toFixed(4)}, {p.longitude.toFixed(4)}
+                                  </a>
+                                </>
+                              ) : '—'
                             return (
                               <tr key={i}>
                                 <td>{i + 1}</td>
@@ -5707,9 +5932,10 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                   </button>
                 </h3>
                 <p className="subtitle">
-                  Eje Y: segundos entre GPSTimeStamp y ServerTimeStamp del mismo registro.
-                  En condiciones normales la diferencia es de pocos segundos.
-                  Picos indican transmisión en lote (sin señal previa).
+                  Eje Y: segundos entre que se tomó cada posición (GPS) y que llegó al servidor. Eje X: los
+                  registros en orden, no el tiempo (un hueco de horas sin registros no ocupa espacio). Con señal la
+                  diferencia es de pocos segundos; cada pico violeta sobre la línea de 1 min es un corte sin señal,
+                  y la franja violeta marca su duración.
                 </p>
                 {(() => {
                   const pts = signalLossData.all_points.filter(
@@ -5725,7 +5951,8 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                   const maxDiff = Math.max(...pts.map((p) => p.diff_seconds), 60)
                   const xOf = (i) => PL + (i / (pts.length - 1)) * iW
                   const yOf = (v) => PT + iH - Math.min(v / maxDiff, 1) * iH
-                  const thresholdY = yOf(30)
+                  const thresholdY = yOf(60) // mismo umbral que la detección (signal_loss_detection._LATE_DELAY_SECONDS)
+                  const tMs = (iso) => Date.parse(iso)
 
                   const polyline = pts.map((p, i) => `${xOf(i).toFixed(1)},${yOf(p.diff_seconds).toFixed(1)}`).join(' ')
 
@@ -5739,26 +5966,27 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                     >
                       {/* Área de fondo para segmentos sin señal */}
                       {signalLossData.segments.map((seg, si) => {
-                        const segPts = pts.filter((p) => p.is_signal_loss)
-                        if (segPts.length === 0) return null
-                        const firstIdx = pts.findIndex((p) => p.gps_timestamp === seg.gps_start || p.is_signal_loss)
-                        const lastIdx = pts.findLastIndex((p) => p.gps_timestamp === seg.gps_end || p.is_signal_loss)
-                        if (firstIdx < 0 || lastIdx < 0) return null
+                        // Franja de cada corte: de su primera a su última posición (antes todas iban del
+                        // primer al último punto sin señal del periodo y se enciman en una sola).
+                        const t0 = tMs(seg.gps_start), t1 = tMs(seg.gps_end)
+                        const firstIdx = pts.findIndex((p) => tMs(p.gps_timestamp) >= t0)
+                        const lastIdx = pts.findLastIndex((p) => tMs(p.gps_timestamp) <= t1)
+                        if (firstIdx < 0 || lastIdx < firstIdx) return null
                         return (
                           <rect
                             key={si}
                             x={xOf(firstIdx)}
                             y={PT}
-                            width={xOf(lastIdx) - xOf(firstIdx)}
+                            width={Math.max(xOf(lastIdx) - xOf(firstIdx), 2)}
                             height={iH}
-                            fill="rgba(239,68,68,0.08)"
+                            fill="rgba(124,58,237,0.12)"
                           />
                         )
                       })}
 
-                      {/* Línea de umbral normal (30 s) */}
-                      <line x1={PL} y1={thresholdY} x2={W - PR} y2={thresholdY} stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 3" />
-                      <text x={PL - 2} y={thresholdY + 3} textAnchor="end" fill="#f59e0b">30s</text>
+                      {/* Línea de umbral (60 s): por arriba, el registro llegó tarde */}
+                      <line x1={PL} y1={thresholdY} x2={W - PR} y2={thresholdY} stroke="#334155" strokeWidth={1} strokeDasharray="4 3" />
+                      <text x={PL - 2} y={thresholdY + 3} textAnchor="end" fill="#334155">60s</text>
 
                       {/* Eje Y etiquetas */}
                       {yLabels.map((v) => (
@@ -5782,17 +6010,17 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                           cx={xOf(i)}
                           cy={yOf(p.diff_seconds)}
                           r={pts.length > 200 ? 1.5 : 3}
-                          fill={p.is_signal_loss ? '#ef4444' : '#3b82f6'}
+                          fill={p.is_signal_loss ? '#7c3aed' : '#3b82f6'}
                         />
                       ))}
 
                       {/* Leyenda */}
                       <circle cx={PL + 10} cy={H - 8} r={4} fill="#3b82f6" />
                       <text x={PL + 18} y={H - 5} fill="#888">Normal</text>
-                      <circle cx={PL + 75} cy={H - 8} r={4} fill="#ef4444" />
+                      <circle cx={PL + 75} cy={H - 8} r={4} fill="#7c3aed" />
                       <text x={PL + 83} y={H - 5} fill="#888">Sin señal</text>
-                      <line x1={PL + 145} y1={H - 8} x2={PL + 160} y2={H - 8} stroke="#f59e0b" strokeDasharray="4 3" strokeWidth={1.5} />
-                      <text x={PL + 164} y={H - 5} fill="#888">Umbral 30 s</text>
+                      <line x1={PL + 145} y1={H - 8} x2={PL + 160} y2={H - 8} stroke="#334155" strokeDasharray="4 3" strokeWidth={1.5} />
+                      <text x={PL + 164} y={H - 5} fill="#888">Umbral 1 min</text>
                     </svg>
                   )
                 })()}
@@ -6128,7 +6356,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
                       <tbody>
                         {routeAnomaliesData.alerts.map((a, i) => (
                           <tr key={i}>
-                            <td>#{a.origin_cluster_id} → #{a.destination_cluster_id}</td>
+                            <td style={{ whiteSpace: 'normal', minWidth: 220 }}>{routeLabel(a)}</td>
                             <td style={{ fontSize: 11 }}>{a.start_timestamp ? new Date(a.start_timestamp).toLocaleString('es-MX') : '—'}</td>
                             <td>
                               <span className={a.severity === 'alta' ? 'warning' : ''}>
@@ -6366,7 +6594,7 @@ if(bounds.length)map.fitBounds(L.latLngBounds(bounds),{padding:[30,30]});
 
           {!roadCovMatch && !roadCovLoading && (
             <p className="subtitle">
-              Requiere que el análisis de cobertura global (sección 7 del Dashboard) esté calculado primero.
+              Requiere que el análisis de "Cobertura GPS global — todos los activos" (arriba, en este mismo menú) esté calculado primero.
             </p>
           )}
 

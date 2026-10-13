@@ -10,6 +10,13 @@ import numpy as np
 import pandas as pd
 import requests
 
+# LIMITACIÓN DE DATOS CONFIRMADA (no de código): el PDF pide validar "en reposo" contra
+# velocidad reportada, pero ni merged_pos_eventtype ni pos_raw tienen campo de velocidad
+# (verificado por DESCRIBE del esquema DuckDB). El único candidato, gpsDistance, es un
+# odómetro acumulado reportado de forma esporádica (la mayoría de registros traen 0,
+# ocasionalmente el total acumulado) — no sirve como proxy de velocidad instantánea.
+# La detección de "en reposo" queda 100% por deriva GPS (mismo tipo de limitación que
+# la ausencia de driverId en route_stop_patterns.py / route_duration_patterns.py).
 _MIN_STOP_SECONDS: float = 300.0
 _MAX_STEP_M: float = 50.0
 _MIN_RECORDS: int = 3
@@ -18,11 +25,29 @@ _MAX_RALENTI_DRIFT_M: float = 150.0
 # dirección pueden acumular deriva. Si un segmento clasificado como "ralenti" por EventType
 # se desplazó más que esto de inicio a fin, es más probable que sea desplazamiento lento
 # (tráfico) mal reportado como ralentí — no se confía en el EventType en ese caso.
+# El PDF sugiere 50-100m; validado empíricamente contra un asset real (117206/307,
+# 81 paradas) que 100m pierde el match geo en 26 paradas (32%) — gasolineras/terminales
+# de carga reales quedan a 150-300m del punto GPS porque el vehículo se detiene en el
+# patio/andén, no sobre el punto que OSM etiqueta. 300m es el valor validado, no un descuido.
 _GEO_RADIUS_M: int = 300
 _MAX_GEO_CALLS: int = 100
 _OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
 _OVERPASS_URL_FALLBACK = "https://overpass-api.de/api/interpreter"
 _OVERPASS_TIMEOUT = 8
+_OVERPASS_RETRIES = 3
+# Cortacircuitos: si Overpass falla después de todos los reintentos, no se vuelve a consultar
+# en este tiempo. Sin esto, con Overpass caído cada parada espera ~80 s y la API se cuelga.
+_OVERPASS_COOLDOWN_S = 10 * 60
+_overpass_down_until = 0.0
+
+
+def _overpass_available() -> bool:
+    return time.time() >= _overpass_down_until
+
+
+def _mark_overpass_down() -> None:
+    global _overpass_down_until
+    _overpass_down_until = time.time() + _OVERPASS_COOLDOWN_S
 
 # Persistent disk cache so Overpass is never called twice for the same location
 _DISK_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "geo_cache"
@@ -324,10 +349,12 @@ def _prewarm_geo_cache_batch(stops: list[dict], max_calls: int) -> None:
         if len(to_fetch) >= max_calls:
             break
 
-    if not to_fetch:
+    if not to_fetch or not _overpass_available():
         return
 
     for i in range(0, len(to_fetch), _BATCH_SIZE):
+        if not _overpass_available():
+            return
         batch = to_fetch[i: i + _BATCH_SIZE]
         query = _build_batch_overpass_query(batch)
         batch_timeout = 15 + 4 * len(batch)
@@ -346,8 +373,8 @@ def _prewarm_geo_cache_batch(stops: list[dict], max_calls: int) -> None:
                 continue
 
         if elements is None:
-            time.sleep(5)  # server is busy — wait before next batch
-            continue
+            _mark_overpass_down()
+            return
 
         # Map each returned element to the batch location(s) it falls within
         loc_results: dict[tuple[float, float], tuple[str | None, str | None]] = {
@@ -398,22 +425,31 @@ def _classify_geo(lat: float, lon: float) -> tuple[str | None, str | None]:
         _geo_cache[cache_key] = disk
         return disk
 
+    if not _overpass_available():
+        return "ERROR", None
     query = _build_overpass_query(lat, lon)
 
+    # Overpass falla seguido por carga (429/504/timeout); sin reintento la parada se queda sin POI
+    # aunque exista (p. ej. la base del asset 2728 salió "sin POI" en 4 de 15 paradas).
     elements = None
-    for url in (_OVERPASS_URL, _OVERPASS_URL_FALLBACK):
-        try:
-            resp = requests.post(
-                url, data={"data": query}, headers=_OVERPASS_HEADERS,
-                timeout=_OVERPASS_TIMEOUT + 4,
-            )
-            resp.raise_for_status()
-            elements = resp.json().get("elements", [])
+    for attempt in range(_OVERPASS_RETRIES):
+        for url in (_OVERPASS_URL, _OVERPASS_URL_FALLBACK):
+            try:
+                resp = requests.post(
+                    url, data={"data": query}, headers=_OVERPASS_HEADERS,
+                    timeout=_OVERPASS_TIMEOUT + 4,
+                )
+                resp.raise_for_status()
+                elements = resp.json().get("elements", [])
+                break
+            except Exception:
+                continue
+        if elements is not None:
             break
-        except Exception:
-            continue
+        time.sleep(2 ** attempt)
     if elements is None:
         # Network failure — don't cache; caller handles with heuristics
+        _mark_overpass_down()
         return "ERROR", None
 
     for el in elements:

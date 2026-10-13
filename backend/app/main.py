@@ -293,6 +293,7 @@ def duration_anomalies(
             alerts.append({
                 "route_index": route_idx,
                 "origin_cluster_id": pattern["origin_cluster_id"],
+                **{k: pattern.get(k) for k in ("origin_place_n", "origin_place_name", "destination_place_n", "destination_place_name")},
                 "destination_cluster_id": pattern["destination_cluster_id"],
                 "start_timestamp": route.get("start_timestamp"),
                 "end_timestamp": route.get("end_timestamp"),
@@ -1091,6 +1092,7 @@ async def stops_route_anomalies(
                 alerts.append({
                     "route_index": route_idx,
                     "origin_cluster_id": pattern["origin_cluster_id"],
+                    **{k: pattern.get(k) for k in ("origin_place_n", "origin_place_name", "destination_place_n", "destination_place_name")},
                     "destination_cluster_id": pattern["destination_cluster_id"],
                     "start_timestamp": route.get("start_timestamp"),
                     "end_timestamp": route.get("end_timestamp"),

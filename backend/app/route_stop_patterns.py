@@ -28,7 +28,7 @@ from typing import Any
 import pandas as pd
 
 from app.asset_stop_profile import build_profile_from_stops, flag_atypical_stops
-from app.route_learning import cluster_points, extract_route_endpoints, is_meaningful_trip
+from app.route_learning import cluster_points, extract_route_endpoints, is_meaningful_trip, label_route_patterns
 
 _DEFAULT_ORIGIN_RADIUS_KM = 8.0
 _DEFAULT_DEST_RADIUS_KM = 8.0
@@ -122,6 +122,7 @@ def build_route_stop_patterns(
 
     origin_assign, _ = cluster_points([(e[0], e[1]) for e in endpoints], origin_radius_km)
     dest_assign, _ = cluster_points([(e[2], e[3]) for e in endpoints], dest_radius_km)
+    endpoint_of = dict(zip(valid_idx, endpoints))
 
     route_groups: dict[tuple[int, int], list[int]] = {}
     for local_i, route_i in enumerate(valid_idx):
@@ -145,6 +146,10 @@ def build_route_stop_patterns(
         patterns.append({
             "origin_cluster_id": oid,
             "destination_cluster_id": did,
+            # Centro de los inicios/fines de los viajes de este patrón (no del cluster completo,
+            # que a 8 km puede mezclar dos bases cercanas).
+            **{k: round(sum(endpoint_of[i][j] for i in route_indices) / len(route_indices), 5)
+               for j, k in enumerate(("origin_lat", "origin_lon", "destination_lat", "destination_lon"))},
             "total_trips": len(route_indices),
             "route_indices": route_indices,
             "avg_stop_count": round(float(counts_series.mean()), 2),
@@ -157,6 +162,7 @@ def build_route_stop_patterns(
         })
 
     patterns.sort(key=lambda p: -p["total_trips"])
+    label_route_patterns(patterns)
     return {
         "total_routes_input": len(routes),
         "total_route_groups": len(patterns),

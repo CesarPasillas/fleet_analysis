@@ -189,6 +189,8 @@ class SignalLossSegment(BaseModel):
     gps_start: str | None = None
     gps_end: str | None = None
     server_received_at: str | None = None
+    server_received_until: str | None = None
+    max_delay_minutes: float | None = None
     duration_minutes: float
     num_records: int
     coordinates: list[list[float]] = []

@@ -19,8 +19,13 @@ caso de estudio. Este módulo implementa esa fase faltante:
 """
 from __future__ import annotations
 
+import json
 import math
+import time
+from pathlib import Path
 from typing import Any
+
+import requests
 
 _DEFAULT_ORIGIN_RADIUS_KM = 8.0
 _DEFAULT_DEST_RADIUS_KM = 8.0
@@ -98,6 +103,106 @@ def cluster_points(points: list[tuple[float, float]], radius_km: float) -> tuple
             clusters.append([lat, lon, 1])
             assignments.append(len(clusters) - 1)
     return assignments, clusters
+
+
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+_PLACE_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "geo_cache" / "places"
+_PLACE_LABEL_RADIUS_KM = 2.0   # más fino que el radio de agrupación (8 km): bases a 7.5 km (pensión y
+                                # centro de carga del asset 2728) no deben compartir etiqueta
+_MAX_PLACE_LOOKUPS = 40   # consultas nuevas a Nominatim por llamada (1 por segundo, política de uso)
+_place_cache: dict[tuple[float, float], str | None] = {}
+
+
+def describe_place(lat: float, lon: float) -> str | None:
+    """Nombre legible del lugar (colonia, ciudad, estado) por geocodificación inversa de OSM.
+    Caché en memoria y en disco; None si no hay red o no hay resultado."""
+    key = (round(lat, 3), round(lon, 3))
+    if key in _place_cache:
+        return _place_cache[key]
+    path = _PLACE_CACHE_DIR / f"{key[0]}_{key[1]}.json"
+    if path.exists():
+        try:
+            _place_cache[key] = json.loads(path.read_text()).get("name")
+            return _place_cache[key]
+        except Exception:
+            pass
+    try:
+        resp = requests.get(
+            _NOMINATIM_URL,
+            params={"lat": lat, "lon": lon, "format": "json", "zoom": 14, "addressdetails": 1},
+            headers={"User-Agent": "fleet-analysis-phd/1.0"},
+            timeout=6,
+        )
+        resp.raise_for_status()
+        addr = resp.json().get("address", {})
+    except Exception:
+        return None  # sin red: no se guarda, se reintenta en la siguiente llamada
+    finally:
+        time.sleep(1.0)
+    local = addr.get("neighbourhood") or addr.get("suburb") or addr.get("quarter") or addr.get("hamlet")
+    city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality") or addr.get("county")
+    parts = [p for p in (local, city, addr.get("state")) if p]
+    name = ", ".join(dict.fromkeys(parts)) or None
+    _place_cache[key] = name
+    try:
+        _PLACE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"name": name}, ensure_ascii=False))
+    except Exception:
+        pass
+    return name
+
+
+def label_points(refs: list[dict[str, Any]], radius_km: float) -> None:
+    """
+    Escribe place_n (desde 1) y place_name en cada dict de refs (con lat/lon). Los centroides a
+    <= radius_km comparten número y nombre, numerados en el orden en que aparecen en refs.
+    """
+    if not refs:
+        return
+    assign, clusters = cluster_points([(r["lat"], r["lon"]) for r in refs], radius_km)
+    number: dict[int, int] = {}
+    for cid in assign:
+        number.setdefault(cid, len(number) + 1)
+    names: dict[int, str | None] = {}
+    lookups = 0
+    for cid in number:
+        s_lat, s_lon, n = clusters[cid]
+        lat, lon = s_lat / n, s_lon / n
+        cached = (round(lat, 3), round(lon, 3)) in _place_cache or (
+            _PLACE_CACHE_DIR / f"{round(lat, 3)}_{round(lon, 3)}.json").exists()
+        if cached or lookups < _MAX_PLACE_LOOKUPS:
+            lookups += 0 if cached else 1
+            names[cid] = describe_place(lat, lon)
+    for ref, cid in zip(refs, assign):
+        ref["place_n"] = number[cid]
+        ref["place_name"] = names.get(cid) or f"{ref['lat']:.4f}, {ref['lon']:.4f}"
+
+
+def label_places(origins: list[dict[str, Any]], radius_km: float) -> None:
+    """
+    Etiqueta legible para orígenes y destinos. Los cluster_id internos se numeran por
+    separado para orígenes y destinos y empiezan en 0 ("Origen #1" y "Destino #1" eran lugares
+    distintos). Aquí un mismo lugar tiene el mismo número sea origen o destino, numerado desde 1
+    (orígenes con más viajes primero), con un nombre descriptivo.
+    """
+    refs: list[dict[str, Any]] = []
+    for o in origins:
+        refs.append(o)
+        refs.extend(o["destinations"])
+    label_points(refs, radius_km)
+
+
+def label_route_patterns(patterns: list[dict[str, Any]]) -> None:
+    """Igual que label_places para los patrones origen → destino de route_duration_patterns /
+    route_stop_patterns: añade origin_place_n/_name y destination_place_n/_name."""
+    refs: list[dict[str, Any]] = []
+    for p in patterns:
+        refs.append({"lat": p["origin_lat"], "lon": p["origin_lon"]})
+        refs.append({"lat": p["destination_lat"], "lon": p["destination_lon"]})
+    label_points(refs, _PLACE_LABEL_RADIUS_KM)
+    for p, o, d in zip(patterns, refs[0::2], refs[1::2]):
+        p["origin_place_n"], p["origin_place_name"] = o["place_n"], o["place_name"]
+        p["destination_place_n"], p["destination_place_name"] = d["place_n"], d["place_name"]
 
 
 def build_route_learning_model(
@@ -193,6 +298,7 @@ def build_route_learning_model(
         })
 
     origins_out.sort(key=lambda o: -o["total_trips"])
+    label_places(origins_out, _PLACE_LABEL_RADIUS_KM)
 
     return {
         "total_routes_input": len(routes),
