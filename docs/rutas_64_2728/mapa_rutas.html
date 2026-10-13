@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapa de rutas</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet-polylinedecorator@1.6.0/dist/leaflet.polylineDecorator.min.js"></script>
+<style>
+  :root {
+    --bg: #f8fafc; --panel: #ffffff; --text: #0f172a; --muted: #64748b; --line: #e2e8f0; --sel: #eff6ff;
+    --ida: #2563eb; --regreso: #ea580c; --trayecto: #475569; --local: #a8a29e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; color: var(--text); background: var(--bg); }
+  .app { display: grid; grid-template-columns: 400px 1fr; height: 100%; }
+  aside { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); min-height: 0; }
+  header { padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+  label.chk { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; user-select: none; }
+  .stats { color: var(--muted); font-size: 12px; }
+  .list { overflow: auto; flex: 1; min-height: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 600; color: var(--muted); font-size: 11px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  tr.r { cursor: pointer; }
+  tr.r:hover { background: #f1f5f9; }
+  tr.r.sel { background: var(--sel); }
+  tr.r.pair { background: #fff7ed; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; color: #fff; font-size: 11px; font-weight: 600; }
+  .ida { background: var(--ida); } .regreso { background: var(--regreso); } .trayecto { background: var(--trayecto); } .local { background: var(--local); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .detail { border-top: 1px solid var(--line); padding: 10px 14px; max-height: 42%; overflow: auto; font-size: 12px; }
+  .detail h2 { font-size: 13px; margin: 0 0 6px; }
+  .detail dl { display: grid; grid-template-columns: 130px 1fr; gap: 2px 8px; margin: 0; }
+  .detail dt { color: var(--muted); } .detail dd { margin: 0; overflow-wrap: anywhere; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  #map { height: 100%; }
+  .legend { background: var(--panel); padding: 8px 10px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.2); font-size: 12px; line-height: 1.7; }
+  .legend i { display: inline-block; width: 18px; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .pin { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { font: inherit; border: 0; background: var(--panel); color: var(--text); padding: 4px 10px; cursor: pointer; }
+  .seg button.on { background: var(--text); color: #fff; }
+  .esc { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .detail ol { margin: 6px 0 0; padding-left: 18px; } .detail li { margin-bottom: 6px; }
+  .detail .sub { color: var(--muted); }
+  @media (max-width: 800px) { .app { grid-template-columns: 1fr; grid-template-rows: 45% 55%; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <header>
+      <h1>Rutas: inicio, fin y retorno</h1>
+      <div class="row">
+        <span class="seg"><button id="modeRutas" class="on">Rutas</button><button id="modeViajes">Viajes</button></span>
+        <select id="asset"></select>
+        <label class="chk" id="allPinsLbl"><input type="checkbox" id="allPins"> inicio/fin de todas</label>
+      </div>
+      <div class="row" id="types"></div>
+      <div class="stats" id="stats"></div>
+    </header>
+    <div class="list">
+      <table>
+        <thead id="thead"></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="detail" id="detail"><span class="hint">Selecciona una ruta (clic o ↑/↓). Se resalta junto con su ida/regreso.</span></div>
+  </aside>
+  <div id="map"></div>
+</div>
+<script>
+const ASSETS = [{"assetId":2728,"n":39,"km":3238}];
+const COLORS = { ida: '#2563eb', regreso: '#ea580c', trayecto: '#475569', local: '#a8a29e' };
+const TYPES = ['ida', 'regreso', 'trayecto', 'local'];
+const ESC_COLORS = {
+  'pernocta en base': '#7c3aed', 'descanso nocturno': '#6366f1', 'carga/descarga': '#0891b2', 'entrega probable': '#16a34a',
+  'combustible/descanso': '#d97706', 'alimentos': '#db2777', 'taller': '#78716c',
+  'sin identificar': '#94a3b8', 'hueco de datos': '#0f172a',
+};
+const LABELS = {
+  tipo: 'Tipo', viaje_n: 'Viaje', traslado: 'Traslado entre bases', inicio: 'Inicio', fin: 'Fin', sitio_inicio: 'Sitio inicio', inicio_coord: 'Lat, lon inicio',
+  sitio_fin: 'Sitio fin', fin_coord: 'Lat, lon fin',
+  distancia_km: 'Distancia (km)', duracion_h: 'Duración (h)', linea_recta_km: 'Línea recta (km)',
+  max_alejamiento_km: 'Máx. alejamiento (km)', inicio_motivo: 'Motivo inicio', fin_motivo: 'Motivo fin',
+  retorno_metodo: 'Retorno', parada_origen_min: 'Parada en origen (min)', parada_destino_min: 'Parada en destino (min)',
+  ruta_ida_n: 'Ida correspondiente', regresa_a_origen: 'Regresa a origen', dist_fin_a_origen_ida_km: 'Fin a origen ida (km)',
+  pct_en_carretera: '% en carretera', carreteras_principales: 'Carreteras', puntos_gps: 'Puntos GPS',
+};
+
+// Coordenadas con enlace a Google Maps para ver qué hay exactamente en el punto.
+function gmapsHref(lat, lon) { return `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`; }
+function gmaps(lat, lon) {
+  if (lat == null || lon == null) return null;
+  const ll = `${(+lat).toFixed(6)}, ${(+lon).toFixed(6)}`;
+  return `${ll} · <a href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank" rel="noopener">mapa</a>` +
+    ` · <a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lon}" target="_blank" rel="noopener">street view</a>`;
+}
+
+const map = L.map('map', { preferCanvas: true }).setView([23.5, -102], 5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(map);
+const baseLayer = L.layerGroup().addTo(map);
+const pinLayer = L.layerGroup().addTo(map);
+const selLayer = L.layerGroup().addTo(map);
+
+const legend = L.control({ position: 'bottomright' });
+legend.onAdd = () => {
+  const d = L.DomUtil.create('div', 'legend');
+  d.innerHTML = TYPES.map(t => `<i style="background:${COLORS[t]}"></i>${t}`).join('<br>') +
+    '<br><b style="color:#16a34a">I</b> inicio · <b style="color:#dc2626">F</b> fin · <b style="color:#7c3aed">↺</b> retorno' +
+    '<br><b>Escalas (modo viajes):</b><br>' +
+    Object.entries(ESC_COLORS).map(([k, c]) => `<span class="esc" style="background:${c}"></span>${k}`).join('<br>');
+  return d;
+};
+legend.addTo(map);
+
+// Las rutas de cada asset viven en mapa_datos/a_<assetId>.js y se cargan al seleccionarlo.
+const byAsset = {};
+const tripsByAsset = {}, escalasByAsset = {};
+window.loadRoutes = (assetId, routes, extra) => {
+  byAsset[assetId] = routes;
+  tripsByAsset[assetId] = extra?.viajes || [];
+  escalasByAsset[assetId] = extra?.escalas || [];
+};
+let mode = 'rutas';
+function ensureAsset(assetId, done) {
+  if (byAsset[assetId]) return done();
+  const s = document.createElement('script');
+  s.src = `mapa_datos/a_${assetId}.js`;
+  s.onload = done;
+  s.onerror = () => { document.getElementById('stats').textContent = `No se pudo cargar mapa_datos/a_${assetId}.js`; };
+  document.head.appendChild(s);
+}
+const assetSel = document.getElementById('asset');
+for (const a of ASSETS) assetSel.add(new Option(`asset ${a.assetId} · ${a.n} rutas · ${a.km.toLocaleString()} km`, a.assetId));
+
+const active = new Set(TYPES);
+const typesDiv = document.getElementById('types');
+for (const t of TYPES) {
+  const l = document.createElement('label');
+  l.className = 'chk';
+  l.innerHTML = `<input type="checkbox" checked value="${t}"> <span class="badge ${t}">${t}</span>`;
+  l.querySelector('input').onchange = e => { e.target.checked ? active.add(t) : active.delete(t); render(); };
+  typesDiv.appendChild(l);
+}
+
+let visible = [], selected = null;
+const lines = new Map();
+
+function pin(latlng, text, color, title) {
+  return L.marker(latlng, {
+    title,
+    icon: L.divIcon({ className: '', html: `<div class="pin" style="background:${color}">${text}</div>`, iconSize: [22, 22], iconAnchor: [11, 11] }),
+  });
+}
+
+function pairOf(r) {
+  const rs = byAsset[r.assetId];
+  if (r.tipo === 'regreso' && r.ruta_ida_n != null) return rs.find(x => x.ruta_n === r.ruta_ida_n);
+  if (r.tipo === 'ida') return rs.find(x => x.tipo === 'regreso' && x.ruta_ida_n === r.ruta_n);
+  return null;
+}
+
+function render() {
+  if (!byAsset[assetSel.value]) {
+    document.getElementById('stats').textContent = 'Cargando…';
+    return ensureAsset(assetSel.value, render);
+  }
+  if (mode === 'viajes') return renderTrips();
+  document.getElementById('types').style.display = '';
+  document.getElementById('allPinsLbl').style.display = '';
+  document.getElementById('thead').innerHTML = '<tr><th>#</th><th>tipo</th><th>inicio</th><th>fin</th><th class="num">km</th><th>sitios</th></tr>';
+  const rs = byAsset[assetSel.value];
+  visible = rs.filter(r => active.has(r.tipo));
+  baseLayer.clearLayers(); pinLayer.clearLayers(); selLayer.clearLayers(); lines.clear();
+  const showPins = document.getElementById('allPins').checked;
+  for (const r of visible) {
+    const pl = L.polyline(r.path, { color: COLORS[r.tipo], weight: 3, opacity: 0.45 })
+      .on('click', () => select(r, false)).addTo(baseLayer);
+    lines.set(r.ruta_n, pl);
+    if (showPins) {
+      L.circleMarker(r.path[0], { radius: 4, color: '#16a34a', fillOpacity: 1 }).bindTooltip(`#${r.ruta_n} inicio ${r.inicio}`).addTo(pinLayer);
+      L.circleMarker(r.path[r.path.length - 1], { radius: 4, color: '#dc2626', fillOpacity: 1 }).bindTooltip(`#${r.ruta_n} fin ${r.fin}`).addTo(pinLayer);
+    }
+  }
+  const km = visible.reduce((s, r) => s + r.distancia_km, 0);
+  const counts = TYPES.map(t => `${t}: ${rs.filter(r => r.tipo === t).length}`).join(' · ');
+  document.getElementById('stats').textContent = `${visible.length} rutas visibles · ${Math.round(km).toLocaleString()} km · ${counts}`;
+  document.getElementById('rows').innerHTML = visible.map(r => `
+    <tr class="r" data-n="${r.ruta_n}">
+      <td>${r.ruta_n}</td><td><span class="badge ${r.tipo}">${r.tipo}</span></td>
+      <td>${r.inicio.slice(5)}</td><td>${r.fin.slice(5)}</td>
+      <td class="num">${r.distancia_km.toFixed(1)}</td><td>${r.sitio_inicio}→${r.sitio_fin}</td>
+    </tr>`).join('');
+  document.querySelectorAll('tr.r').forEach(tr => tr.onclick = () => select(visible.find(r => r.ruta_n === +tr.dataset.n), true));
+  if (visible.length) map.fitBounds(L.featureGroup([...lines.values()]).getBounds(), { padding: [20, 20] });
+  selected = null;
+  document.getElementById('detail').innerHTML = '<span class="hint">Selecciona una ruta (clic o ↑/↓). Se resalta junto con su ida/regreso.</span>';
+}
+
+function drawSelected(r, main) {
+  const pl = L.polyline(r.path, { color: COLORS[r.tipo], weight: main ? 6 : 4, opacity: main ? 1 : 0.8 }).addTo(selLayer);
+  if (window.L.polylineDecorator) {
+    L.polylineDecorator(pl, { patterns: [{ offset: 25, repeat: 90, symbol: L.Symbol.arrowHead({ pixelSize: 9, pathOptions: { color: COLORS[r.tipo], fillOpacity: 1, weight: 0 } }) }] }).addTo(selLayer);
+  }
+  pin(r.path[0], 'I', '#16a34a', `#${r.ruta_n} inicio`).bindPopup(`<b>#${r.ruta_n} inicio</b><br>${r.inicio}<br>${r.inicio_motivo}`).addTo(selLayer);
+  const end = r.path[r.path.length - 1];
+  if (r.fin_motivo === 'retorno detectado') {
+    pin(end, '↺', '#7c3aed', `#${r.ruta_n} retorno`).bindPopup(`<b>#${r.ruta_n} punto de retorno</b><br>${r.fin}<br>${r.retorno_metodo || ''}`).addTo(selLayer);
+  } else {
+    pin(end, 'F', '#dc2626', `#${r.ruta_n} fin`).bindPopup(`<b>#${r.ruta_n} fin</b><br>${r.fin}<br>${r.fin_motivo}`).addTo(selLayer);
+  }
+  return pl;
+}
+
+function select(r, fit) {
+  if (!r) return;
+  selected = r;
+  selLayer.clearLayers();
+  const pair = pairOf(r);
+  const parts = [];
+  if (pair) parts.push(drawSelected(pair, false));
+  parts.push(drawSelected(r, true));
+  if (fit) map.fitBounds(L.featureGroup(parts).getBounds(), { padding: [40, 40], maxZoom: 15 });
+  document.querySelectorAll('tr.r').forEach(tr => {
+    tr.classList.toggle('sel', +tr.dataset.n === r.ruta_n);
+    tr.classList.toggle('pair', !!pair && +tr.dataset.n === pair.ruta_n);
+  });
+  document.querySelector('tr.r.sel')?.scrollIntoView({ block: 'nearest' });
+  const v = { ...r, traslado: r.traslado ? 'sí' : null, inicio_coord: gmaps(r.inicio_lat, r.inicio_lon), fin_coord: gmaps(r.fin_lat, r.fin_lon) };
+  const dl = Object.entries(LABELS)
+    .filter(([k]) => v[k] !== null && v[k] !== '' && v[k] !== undefined)
+    .map(([k, l]) => `<dt>${l}</dt><dd>${v[k]}</dd>`).join('');
+  document.getElementById('detail').innerHTML =
+    `<h2>asset ${r.assetId} · ruta #${r.ruta_n} <span class="badge ${r.tipo}">${r.tipo}</span>${pair ? ` · par: #${pair.ruta_n}` : ''}</h2><dl>${dl}</dl>`;
+}
+
+// ---------------------------------------------------------------- viajes y escalas
+let trips = [], selTrip = null;
+
+function renderTrips() {
+  document.getElementById('types').style.display = 'none';
+  document.getElementById('allPinsLbl').style.display = 'none';
+  const a = assetSel.value, rs = byAsset[a];
+  trips = tripsByAsset[a] || [];
+  baseLayer.clearLayers(); pinLayer.clearLayers(); selLayer.clearLayers(); lines.clear();
+  for (const r of rs) L.polyline(r.path, { color: '#94a3b8', weight: 2, opacity: 0.35 }).addTo(baseLayer);
+  document.getElementById('thead').innerHTML = '<tr><th>#</th><th>rutas</th><th>inicio</th><th class="num">km</th><th class="num">h</th><th>origen→destino→fin</th></tr>';
+  document.getElementById('rows').innerHTML = trips.map(t => `
+    <tr class="r" data-n="${t.viaje_n}">
+      <td>${t.viaje_n}</td><td>${t.rutas}</td><td>${t.inicio.slice(5)}</td>
+      <td class="num">${Math.round(t.km).toLocaleString()}</td><td class="num">${t.horas_total}</td>
+      <td>${t.sitio_origen}→${t.sitio_destino}→${t.sitio_fin}${t.regresa_a_base ? '' : ' ⚠'}</td>
+    </tr>`).join('');
+  document.querySelectorAll('tr.r').forEach(tr => tr.onclick = () => selectTrip(trips.find(t => t.viaje_n === +tr.dataset.n)));
+  const clear = trips.length && trips[0].base_clara === false ? ' · ⚠ asset sin base clara' : '';
+  document.getElementById('stats').textContent =
+    `${trips.length} viajes · bases: ${trips[0]?.bases_asset || '—'}${clear} · ⚠ = no regresa a una base`;
+  if (rs.length) map.fitBounds(L.featureGroup(rs.map(r => L.polyline(r.path))).getBounds(), { padding: [20, 20] });
+  selTrip = null;
+  document.getElementById('detail').innerHTML = '<span class="hint">Selecciona un viaje (clic o ↑/↓): se dibujan sus rutas y sus escalas numeradas.</span>';
+}
+
+function escalaPopup(e, k) {
+  const ps = (e._paradas || []).map(p =>
+    `<li>${p.label ? `<b>${p.label}</b> · ` : ''}${(p.min / 60).toFixed(1)} h${p.apagado_pct != null ? ` · motor apagado ${p.apagado_pct}%` : ''}<br>
+     <span class="sub">${p.lat}, ${p.lon}</span> · <a href="${gmapsHref(p.lat, p.lon)}" target="_blank" rel="noopener">Google Maps</a></li>`).join('');
+  return `<b>Escala ${k} · ${e.sitio}</b> <span class="esc" style="background:${ESC_COLORS[e.tipo_escala] || '#94a3b8'}"></span>${e.tipo_escala}<br>
+    ${e.llegada} → ${e.salida} (${e.duracion_h} h)${e.poi ? `<br>POI: ${e.poi}` : ''}<ol>${ps}</ol>`;
+}
+
+function selectTrip(t) {
+  if (!t) return;
+  selTrip = t;
+  selLayer.clearLayers();
+  const a = assetSel.value;
+  const rs = byAsset[a].filter(r => r.viaje_n === t.viaje_n);
+  const es = (escalasByAsset[a] || []).filter(e => e.viaje_n === t.viaje_n).sort((x, y) => x.ruta_antes - y.ruta_antes);
+  const parts = rs.map(r => {
+    const pl = L.polyline(r.path, { color: COLORS[r.tipo], weight: 5, opacity: 0.9 }).bindTooltip(`ruta #${r.ruta_n} (${r.tipo})`).addTo(selLayer);
+    if (window.L.polylineDecorator) {
+      L.polylineDecorator(pl, { patterns: [{ offset: 25, repeat: 90, symbol: L.Symbol.arrowHead({ pixelSize: 9, pathOptions: { color: COLORS[r.tipo], fillOpacity: 1, weight: 0 } }) }] }).addTo(selLayer);
+    }
+    return pl;
+  });
+  const first = rs[0], last = rs[rs.length - 1];
+  pin(first.path[0], 'I', '#16a34a', 'inicio del viaje').bindPopup(`<b>Inicio del viaje ${t.viaje_n}</b><br>${t.inicio} · ${t.sitio_origen}<br>${gmaps(first.inicio_lat, first.inicio_lon)}`).addTo(selLayer);
+  pin(last.path[last.path.length - 1], 'F', '#dc2626', 'fin del viaje').bindPopup(`<b>Fin del viaje ${t.viaje_n}</b><br>${t.fin} · ${t.sitio_fin}<br>${gmaps(last.fin_lat, last.fin_lon)}`).addTo(selLayer);
+  es.forEach((e, i) => {
+    const color = ESC_COLORS[e.tipo_escala] || '#94a3b8';
+    const ps = e._paradas && e._paradas.length ? e._paradas : [{ lat: e.lat, lon: e.lon }];
+    const main = ps.reduce((m, p) => (p.min || 0) > (m.min || 0) ? p : m, ps[0]);
+    for (const p of ps) if (p !== main) L.circleMarker([p.lat, p.lon], { radius: 5, color, fillOpacity: 0.8 }).bindPopup(escalaPopup(e, i + 1)).addTo(selLayer);
+    pin([main.lat, main.lon], i + 1, color, e.tipo_escala).bindPopup(escalaPopup(e, i + 1)).addTo(selLayer);
+  });
+  map.fitBounds(L.featureGroup(parts).getBounds(), { padding: [40, 40], maxZoom: 14 });
+  document.querySelectorAll('tr.r').forEach(tr => tr.classList.toggle('sel', +tr.dataset.n === t.viaje_n));
+  document.querySelector('tr.r.sel')?.scrollIntoView({ block: 'nearest' });
+  const items = es.map((e, i) => {
+    const ps = (e._paradas || []).map(p => `${p.label ? p.label + ' · ' : ''}${(p.min / 60).toFixed(1)} h · ${gmaps(p.lat, p.lon)}`).join('<br>');
+    return `<li><span class="esc" style="background:${ESC_COLORS[e.tipo_escala] || '#94a3b8'}"></span><b>${e.tipo_escala}</b> · ${e.sitio} · ${e.duracion_h} h
+      <div class="sub">${e.llegada} → ${e.salida}${e.motor_apagado_pct != null ? ` · motor apagado ${e.motor_apagado_pct}%` : ''}</div>${ps}</li>`;
+  }).join('');
+  document.getElementById('detail').innerHTML = `<h2>asset ${a} · viaje ${t.viaje_n} · rutas ${t.rutas}</h2>
+    <dl><dt>Inicio</dt><dd>${t.inicio} · ${t.sitio_origen}${t.rol_origen ? ` (${t.rol_origen})` : ''}</dd>
+    <dt>Fin</dt><dd>${t.fin} · ${t.sitio_fin}${t.rol_fin ? ` (${t.rol_fin})` : ''}${t.regresa_a_base ? '' : ' (no regresa a base)'}</dd>
+    <dt>Destino más lejano</dt><dd>${t.sitio_destino} · ${gmaps(t.destino_lat, t.destino_lon)}</dd>
+    <dt>Distancia</dt><dd>${t.km} km · ${t.max_alejamiento_km} km máx. de la base</dd>
+    <dt>Tiempo</dt><dd>${t.horas_total} h total · ${t.horas_manejo} h manejando</dd></dl>
+    ${es.length ? `<b>Escalas</b><ol>${items}</ol>` : '<div class="hint">Sin escalas: viaje directo.</div>'}`;
+}
+
+function setMode(m) {
+  mode = m;
+  document.getElementById('modeRutas').classList.toggle('on', m === 'rutas');
+  document.getElementById('modeViajes').classList.toggle('on', m === 'viajes');
+  render();
+}
+document.getElementById('modeRutas').onclick = () => setMode('rutas');
+document.getElementById('modeViajes').onclick = () => setMode('viajes');
+
+document.addEventListener('keydown', e => {
+  if (!['ArrowDown', 'ArrowUp'].includes(e.key) || e.target.tagName === 'SELECT') return;
+  if (mode === 'viajes') {
+    if (!trips.length) return;
+    e.preventDefault();
+    const i = selTrip ? trips.indexOf(selTrip) : -1;
+    return selectTrip(trips[Math.max(0, Math.min(trips.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]);
+  }
+  if (!visible.length) return;
+  e.preventDefault();
+  const i = selected ? visible.indexOf(selected) : -1;
+  const next = visible[Math.max(0, Math.min(visible.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+  select(next, true);
+});
+assetSel.onchange = render;
+document.getElementById('allPins').onchange = render;
+render();
+</script>
+</body>
+</html>
